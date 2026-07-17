@@ -248,6 +248,42 @@ class TestSQLValidator:
         is_valid, error = SQLValidator.validate_query(query)
         assert is_valid is True  # "DROPOFF" 不應該觸發 "DROP" 檢測
 
+    def test_allow_keyword_inside_string_literal(self):
+        """✅ 字串字面值中的關鍵字不應觸發攔截（如 status = 'update'）"""
+        queries = [
+            "SELECT * FROM tasks WHERE status = 'update'",
+            "SELECT * FROM logs WHERE action = 'delete' AND level = 'INFO'",
+            "SELECT * FROM docs WHERE title LIKE '%create%'",
+            "SELECT 'exec summary' AS report_type FROM reports",
+        ]
+        for query in queries:
+            is_valid, error = SQLValidator.validate_query(query)
+            assert is_valid is True, f"False positive on: {query} ({error})"
+
+    def test_allow_semicolon_inside_string_literal(self):
+        """✅ 字串字面值中的分號不應被當成多語句"""
+        query = "SELECT * FROM notes WHERE content = 'a;b;c'"
+        is_valid, error = SQLValidator.validate_query(query)
+        assert is_valid is True, error
+
+    def test_allow_dashes_inside_string_literal(self):
+        """✅ 字串字面值中的 -- 不應被當成 SQL 註釋"""
+        query = "SELECT * FROM products WHERE code = 'AB--123'"
+        is_valid, error = SQLValidator.validate_query(query)
+        assert is_valid is True, error
+
+    def test_reject_keyword_after_escaped_quote_literal(self):
+        """❌ 含跳脫引號（''）的字面值之後的危險關鍵字仍要攔截"""
+        query = "SELECT * FROM users WHERE name = 'O''Brien' UNION SELECT 1; DROP TABLE users"
+        is_valid, error = SQLValidator.validate_query(query)
+        assert is_valid is False
+
+    def test_reject_keyword_outside_literal_with_literals_present(self):
+        """❌ 字面值以外的危險關鍵字仍要攔截"""
+        query = "SELECT * FROM users WHERE note = 'safe'; DELETE FROM users"
+        is_valid, error = SQLValidator.validate_query(query)
+        assert is_valid is False
+
     def test_complex_valid_query(self):
         """✅ 複雜但合法的查詢"""
         query = """

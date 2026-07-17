@@ -605,9 +605,11 @@ class CachedSchemaIntrospector:
                 "hint": "Only pre-configured tables in schemas_config/ are accessible in strict mode"
             }
 
-        # Cache miss - query database
-        logger.debug(f"Cache miss for {cache_key}, querying database")
-        result = self.introspector.get_schema_info(table_name_upper if table_name else None)
+        # Cache miss - query database.
+        # Pass the original table name: uppercasing is only for cache keys.
+        # PostgreSQL identifiers are case-sensitive (folded to lowercase), so an
+        # uppercased name would never match and the lookup would return empty.
+        result = self.introspector.get_schema_info(table_name if table_name else None)
 
         # Mark as fresh database query and cache successful results
         if result.get("success"):
@@ -683,9 +685,9 @@ class CachedSchemaIntrospector:
                  "hint": "Only pre-configured tables in schemas_config/ are accessible in strict mode"
              }
 
-        # Cache miss - query database
+        # Cache miss - query database (original name: uppercasing is only for cache keys)
         logger.debug(f"Cache miss for dependencies: {table_name_upper}, querying database")
-        result = self.introspector.get_table_dependencies(table_name_upper)
+        result = self.introspector.get_table_dependencies(table_name)
 
         # Mark as fresh database query and cache successful results
         if result.get("success"):

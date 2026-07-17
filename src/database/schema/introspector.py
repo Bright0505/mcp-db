@@ -311,64 +311,67 @@ class PostgreSQLSchemaInspector(BaseSchemaInspector):
         try:
             with self.get_connection() as conn:
                 with conn.cursor() as cursor:
-                    # PostgreSQL specific query for table columns with comments
+                    # pg_catalog-based query so all queryable relation kinds are covered:
+                    # ordinary/partitioned tables, views, materialized views, foreign tables.
+                    # (information_schema.columns does not expose materialized views.)
                     query = """
                     SELECT
-                        c.column_name,
-                        c.data_type,
-                        c.is_nullable,
-                        c.column_default,
-                        c.character_maximum_length,
-                        c.numeric_precision,
-                        c.numeric_scale,
-                        CASE WHEN pk.column_name IS NOT NULL THEN true ELSE false END as is_primary_key,
+                        a.attname AS column_name,
+                        pg_catalog.format_type(a.atttypid, NULL) AS data_type,
+                        CASE WHEN a.attnotnull THEN 'NO' ELSE 'YES' END AS is_nullable,
+                        pg_catalog.pg_get_expr(ad.adbin, ad.adrelid) AS column_default,
+                        CASE WHEN a.atttypid IN (1042, 1043) AND a.atttypmod > 4
+                             THEN a.atttypmod - 4 END AS character_maximum_length,
+                        CASE WHEN a.atttypid = 1700 AND a.atttypmod > 4
+                             THEN ((a.atttypmod - 4) >> 16) & 65535 END AS numeric_precision,
+                        CASE WHEN a.atttypid = 1700 AND a.atttypmod > 4
+                             THEN (a.atttypmod - 4) & 65535 END AS numeric_scale,
+                        COALESCE(pk.is_pk, false) AS is_primary_key,
                         fk.foreign_table_name,
                         fk.foreign_column_name,
-                        pgd.description as column_comment
-                    FROM information_schema.columns c
+                        d.description AS column_comment
+                    FROM pg_catalog.pg_class c
+                    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+                    JOIN pg_catalog.pg_attribute a
+                        ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+                    LEFT JOIN pg_catalog.pg_attrdef ad
+                        ON ad.adrelid = c.oid AND ad.adnum = a.attnum
                     LEFT JOIN (
-                        SELECT ku.column_name
-                        FROM information_schema.table_constraints tc
-                        JOIN information_schema.key_column_usage ku
-                            ON tc.constraint_name = ku.constraint_name
-                        WHERE tc.constraint_type = 'PRIMARY KEY'
-                        AND tc.table_name = %s
-                        AND tc.table_schema = %s
-                    ) pk ON c.column_name = pk.column_name
-                    LEFT JOIN (
-                        SELECT
-                            kcu.column_name,
-                            ccu.table_name as foreign_table_name,
-                            ccu.column_name as foreign_column_name
-                        FROM information_schema.referential_constraints rc
-                        JOIN information_schema.key_column_usage kcu
-                            ON rc.constraint_name = kcu.constraint_name
-                        JOIN information_schema.constraint_column_usage ccu
-                            ON rc.unique_constraint_name = ccu.constraint_name
-                        WHERE kcu.table_name = %s
-                        AND kcu.table_schema = %s
-                    ) fk ON c.column_name = fk.column_name
+                        SELECT x.indrelid, unnest(x.indkey) AS attnum, true AS is_pk
+                        FROM pg_catalog.pg_index x
+                        WHERE x.indisprimary
+                    ) pk ON pk.indrelid = c.oid AND pk.attnum = a.attnum
                     LEFT JOIN (
                         SELECT
-                            a.attname as column_name,
-                            d.description
-                        FROM pg_class t
-                        JOIN pg_namespace n ON t.relnamespace = n.oid
-                        JOIN pg_attribute a ON a.attrelid = t.oid
-                        LEFT JOIN pg_description d ON d.objoid = t.oid AND d.objsubid = a.attnum
-                        WHERE t.relname = %s
-                        AND n.nspname = %s
-                        AND a.attnum > 0
-                        AND NOT a.attisdropped
-                    ) pgd ON c.column_name = pgd.column_name
-                    WHERE c.table_name = %s
-                    AND c.table_schema = %s
-                    ORDER BY c.ordinal_position
+                            con.conrelid,
+                            con.conkey[i] AS attnum,
+                            fc.relname AS foreign_table_name,
+                            fa.attname AS foreign_column_name
+                        FROM pg_catalog.pg_constraint con
+                        CROSS JOIN LATERAL generate_subscripts(con.conkey, 1) AS i
+                        JOIN pg_catalog.pg_class fc ON fc.oid = con.confrelid
+                        JOIN pg_catalog.pg_attribute fa
+                            ON fa.attrelid = con.confrelid AND fa.attnum = con.confkey[i]
+                        WHERE con.contype = 'f'
+                    ) fk ON fk.conrelid = c.oid AND fk.attnum = a.attnum
+                    LEFT JOIN pg_catalog.pg_description d
+                        ON d.objoid = c.oid AND d.objsubid = a.attnum
+                    WHERE c.relname = %s
+                    AND n.nspname = %s
+                    AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
+                    ORDER BY a.attnum
                     """
 
                     schema = self.config.schema
-                    cursor.execute(query, (table_name, schema, table_name, schema, table_name, schema, table_name, schema))
+                    cursor.execute(query, (table_name, schema))
                     rows = cursor.fetchall()
+
+                    # PostgreSQL folds unquoted identifiers to lowercase; retry a
+                    # cased lookup (e.g. "MY_TABLE" from a case-insensitive caller)
+                    # against the folded name before reporting no columns.
+                    if not rows and table_name != table_name.lower():
+                        cursor.execute(query, (table_name.lower(), schema))
+                        rows = cursor.fetchall()
 
                     columns = []
                     for row in rows:
@@ -407,31 +410,30 @@ class PostgreSQLSchemaInspector(BaseSchemaInspector):
         try:
             with self.get_connection() as conn:
                 with conn.cursor() as cursor:
-                    # Get all tables and views with comments
+                    # pg_catalog-based listing so all queryable relation kinds are covered
+                    # (information_schema.tables does not expose materialized views)
                     query = """
                     SELECT
-                        t.table_schema,
-                        t.table_name,
-                        t.table_type,
-                        d.description as table_comment
-                    FROM information_schema.tables t
-                    LEFT JOIN (
-                        SELECT
-                            n.nspname as table_schema,
-                            c.relname as table_name,
-                            d.description
-                        FROM pg_class c
-                        JOIN pg_namespace n ON c.relnamespace = n.oid
-                        LEFT JOIN pg_description d ON d.objoid = c.oid AND d.objsubid = 0
-                        WHERE n.nspname = %s
-                        AND c.relkind IN ('r', 'v')
-                    ) d ON t.table_schema = d.table_schema AND t.table_name = d.table_name
-                    WHERE t.table_schema = %s
-                    AND t.table_type IN ('BASE TABLE', 'VIEW')
-                    ORDER BY t.table_name
+                        n.nspname AS table_schema,
+                        c.relname AS table_name,
+                        CASE c.relkind
+                            WHEN 'r' THEN 'BASE TABLE'
+                            WHEN 'p' THEN 'BASE TABLE'
+                            WHEN 'v' THEN 'VIEW'
+                            WHEN 'm' THEN 'MATERIALIZED VIEW'
+                            WHEN 'f' THEN 'FOREIGN TABLE'
+                        END AS table_type,
+                        d.description AS table_comment
+                    FROM pg_catalog.pg_class c
+                    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+                    LEFT JOIN pg_catalog.pg_description d
+                        ON d.objoid = c.oid AND d.objsubid = 0
+                    WHERE n.nspname = %s
+                    AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
+                    ORDER BY c.relname
                     """
 
-                    cursor.execute(query, (self.config.schema, self.config.schema))
+                    cursor.execute(query, (self.config.schema,))
                     rows = cursor.fetchall()
 
                     tables = []

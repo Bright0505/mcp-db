@@ -211,7 +211,7 @@ class SchemaConfig(BaseModel):
             enable_cache=os.getenv("SCHEMA_ENABLE_CACHE", "true").lower() == "true",
             cache_ttl_minutes=int(os.getenv("SCHEMA_CACHE_TTL_MINUTES", "60")),
             preload_on_startup=os.getenv("SCHEMA_PRELOAD_ON_STARTUP", "true").lower() == "true",
-            schema_config_path=os.getenv("SCHEMA_CONFIG_PATH", "schema-config.json"),
+            schema_config_path=os.getenv("SCHEMA_CONFIG_PATH", "schemas_config/"),
             enable_parallel_preload=os.getenv("SCHEMA_PARALLEL_PRELOAD", "true").lower() == "true",
             max_concurrent_queries=int(os.getenv("SCHEMA_MAX_CONCURRENT_QUERIES", "5")),
             strict_mode=os.getenv("SCHEMA_STRICT_MODE", "false").lower() == "true"

@@ -42,33 +42,39 @@ class SQLValidator:
             allowed = ', '.join(cls.ALLOWED_STATEMENTS)
             return False, f"Only {allowed} statements are allowed"
 
+        # Remove string literal contents before scanning for dangerous constructs,
+        # so values like WHERE status = 'update' or names containing ';' / '--'
+        # do not trigger false positives. Doubled quotes ('') inside a literal
+        # are part of the same literal per the SQL standard.
+        scannable = re.sub(r"'(?:[^']|'')*'", "''", query_upper)
+
         # Check for dangerous keywords using word boundaries
         for keyword in cls.DANGEROUS_KEYWORDS:
             # Use regex to match whole words only (avoid false positives like "DROPOFF")
             pattern = rf'\b{keyword}\b'
-            if re.search(pattern, query_upper):
+            if re.search(pattern, scannable):
                 return False, f"Dangerous keyword '{keyword}' not allowed"
 
         # Prevent SQL injection via multiple statements
         # Allow trailing semicolon but not in the middle
-        if ';' in query_stripped[:-1]:
+        if ';' in scannable[:-1]:
             return False, "Multiple statements not allowed"
 
         # Block SQL comments that could be used to bypass validation
-        if '--' in query_stripped or '/*' in query_stripped:
+        if '--' in scannable or '/*' in scannable:
             return False, "SQL comments not allowed"
 
         # Block xp_ extended stored procedures (SQL Server specific attack vector)
         # Use word boundary to avoid false positives with REGEXP_MATCH, REGEXP_REPLACE etc.
-        if re.search(r'\bXP_', query_upper):
+        if re.search(r'\bXP_', scannable):
             return False, "Extended stored procedures not allowed"
 
         # Block OPENROWSET and OPENDATASOURCE (data exfiltration vectors)
-        if 'OPENROWSET' in query_upper or 'OPENDATASOURCE' in query_upper:
+        if 'OPENROWSET' in scannable or 'OPENDATASOURCE' in scannable:
             return False, "OPENROWSET/OPENDATASOURCE not allowed"
 
         # Block INTO OUTFILE (MySQL) and similar export commands
-        if 'INTO OUTFILE' in query_upper or 'INTO DUMPFILE' in query_upper:
+        if 'INTO OUTFILE' in scannable or 'INTO DUMPFILE' in scannable:
             return False, "File export commands not allowed"
 
         # Limit query length to prevent DOS attacks

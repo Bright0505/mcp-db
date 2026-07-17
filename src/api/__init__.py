@@ -1,5 +1,6 @@
-"""REST API layer for MCP Database - FastAPI routes and middleware."""
+"""REST API layer for MCP Database - shared models and middleware.
 
-# Future refactoring will move REST API routes from http_server.py here
+Routes are defined in http_server.py (the single HTTP implementation).
+"""
 
 __all__ = []

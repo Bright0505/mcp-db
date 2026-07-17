@@ -24,7 +24,7 @@ from database.async_manager import HybridDatabaseManager
 from tools import ToolRegistry, get_all_tools
 from tools.validators import SQLValidator
 from api.middleware import setup_middleware
-from api.routes import QueryRequest, CacheInvalidateRequest, HealthResponse
+from api.models import QueryRequest, CacheInvalidateRequest, HealthResponse
 
 logger = logging.getLogger(__name__)
 
@@ -190,7 +190,7 @@ class MCPHTTPServer:
                 raise HTTPException(status_code=503, detail="Database manager not initialized")
             try:
                 result = await self.db_manager.test_connection_async()
-                return self._success_response(result)
+                return self._wrap_result(result)
             except Exception as e:
                 logger.error(f"Connection test failed: {e}")
                 return self._error_response(f"Connection test failed: {str(e)}")
@@ -208,7 +208,7 @@ class MCPHTTPServer:
 
             try:
                 result = await self.db_manager.execute_query_async(query_request.query, query_request.params or [])
-                return self._success_response(result)
+                return self._wrap_result(result)
             except Exception as e:
                 logger.error(f"Query execution failed: {e}")
                 return self._error_response(f"Query execution failed: {str(e)}")
@@ -219,7 +219,7 @@ class MCPHTTPServer:
                 raise HTTPException(status_code=503, detail="Database manager not initialized")
             try:
                 result = self.db_manager.get_schema_info()
-                return self._success_response(result)
+                return self._wrap_result(result)
             except Exception as e:
                 logger.error(f"Schema query failed: {e}")
                 return self._error_response(f"Schema query failed: {str(e)}")
@@ -230,7 +230,7 @@ class MCPHTTPServer:
                 raise HTTPException(status_code=503, detail="Database manager not initialized")
             try:
                 result = self.db_manager.get_schema_info(table_name)
-                return self._success_response(result)
+                return self._wrap_result(result)
             except Exception as e:
                 logger.error(f"Table schema query failed: {e}")
                 return self._error_response(f"Table schema query failed: {str(e)}")
@@ -241,7 +241,7 @@ class MCPHTTPServer:
                 raise HTTPException(status_code=503, detail="Database manager not initialized")
             try:
                 result = self.db_manager.get_table_dependencies(table_name)
-                return self._success_response(result)
+                return self._wrap_result(result)
             except Exception as e:
                 logger.error(f"Dependency analysis failed: {e}")
                 return self._error_response(f"Dependency analysis failed: {str(e)}")
@@ -252,7 +252,7 @@ class MCPHTTPServer:
                 raise HTTPException(status_code=503, detail="Database manager not initialized")
             try:
                 result = self.db_manager.get_schema_summary()
-                return self._success_response(result)
+                return self._wrap_result(result)
             except Exception as e:
                 logger.error(f"Database summary query failed: {e}")
                 return self._error_response(f"Database summary query failed: {str(e)}")
@@ -263,7 +263,7 @@ class MCPHTTPServer:
                 raise HTTPException(status_code=503, detail="Database manager not initialized")
             try:
                 result = self.db_manager.get_database_info()
-                return self._success_response(result)
+                return self._wrap_result(result)
             except Exception as e:
                 logger.error(f"Database info query failed: {e}")
                 return self._error_response(f"Database info query failed: {str(e)}")
@@ -274,7 +274,7 @@ class MCPHTTPServer:
                 raise HTTPException(status_code=503, detail="Database manager not initialized")
             try:
                 result = self.db_manager.get_cache_stats()
-                return self._success_response(result)
+                return self._wrap_result(result)
             except Exception as e:
                 logger.error(f"Cache stats query failed: {e}")
                 return self._error_response(f"Cache stats query failed: {str(e)}")
@@ -285,7 +285,7 @@ class MCPHTTPServer:
                 raise HTTPException(status_code=503, detail="Database manager not initialized")
             try:
                 result = self.db_manager.get_cache_debug_info()
-                return self._success_response(result)
+                return self._wrap_result(result)
             except Exception as e:
                 logger.error(f"Cache debug query failed: {e}")
                 return self._error_response(f"Cache debug query failed: {str(e)}")
@@ -296,7 +296,7 @@ class MCPHTTPServer:
                 raise HTTPException(status_code=503, detail="Database manager not initialized")
             try:
                 result = self.db_manager.invalidate_schema_cache(request.table_name)
-                return self._success_response(result)
+                return self._wrap_result(result)
             except Exception as e:
                 logger.error(f"Cache invalidation failed: {e}")
                 return self._error_response(f"Cache invalidation failed: {str(e)}")
@@ -307,7 +307,7 @@ class MCPHTTPServer:
                 raise HTTPException(status_code=503, detail="Database manager not initialized")
             try:
                 result = self.db_manager.reload_schema_config()
-                return self._success_response(result)
+                return self._wrap_result(result)
             except Exception as e:
                 logger.error(f"Schema reload failed: {e}")
                 return self._error_response(f"Schema reload failed: {str(e)}")
@@ -318,7 +318,7 @@ class MCPHTTPServer:
                 raise HTTPException(status_code=503, detail="Database manager not initialized")
             try:
                 result = self.db_manager.get_static_schema_info()
-                return self._success_response(result)
+                return self._wrap_result(result)
             except Exception as e:
                 logger.error(f"Static schema info query failed: {e}")
                 return self._error_response(f"Static schema info query failed: {str(e)}")
@@ -329,6 +329,20 @@ class MCPHTTPServer:
             "data": data,
             "timestamp": datetime.now().isoformat()
         }
+
+    def _wrap_result(self, result: Any) -> Dict[str, Any]:
+        """Wrap a manager result dict, propagating inner failure to the outer envelope.
+
+        Manager methods report handled failures as {"success": False, ...} instead of
+        raising; without this check the envelope would always say success=True and
+        clients that only look at the outer flag would treat failures as empty results.
+        """
+        if isinstance(result, dict) and result.get("success") is False:
+            error_message = result.get("error") or result.get("message") or "Operation failed"
+            response = self._error_response(str(error_message))
+            response["data"] = result
+            return response
+        return self._success_response(result)
 
     def _error_response(self, error_message: str) -> Dict[str, Any]:
         return {

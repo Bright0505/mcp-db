@@ -83,8 +83,8 @@ MCP (Model Context Protocol) 多資料庫連接器範本，支援 Microsoft SQL 
 
 **1. 準備環境**
 ```bash
-git clone https://github.com/Bright0505/MCP_DB.git
-cd MCP_DB
+git clone https://github.com/Bright0505/mcp-db.git
+cd mcp-db
 cp .env.example .env
 # 編輯 .env 填入資料庫連線資訊
 ```
@@ -102,7 +102,7 @@ cp .env.example .env
     "mcp-db": {
       "command": "python",
       "args": ["-m", "server"],
-      "cwd": "/path/to/MCP_DB/src",
+      "cwd": "/path/to/mcp-db/src",
       "env": {
         "DB_TYPE": "postgresql",
         "DB_HOST": "localhost",
