@@ -18,6 +18,32 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
+# Optional legacy TLS support (opt-in, default off).
+# Old database servers that only speak TLS 1.0/1.1 (e.g. SQL Server 2008/2012)
+# fail the handshake against OpenSSL 3's TLS 1.2+ default with
+# "SSL routines::unsupported protocol". Enable per module via:
+#   docker-compose build args: ENABLE_LEGACY_TLS=true
+# This lowers the container-wide TLS floor, so it must never be the default.
+ARG ENABLE_LEGACY_TLS=false
+RUN if [ "$ENABLE_LEGACY_TLS" = "true" ]; then \
+        printf '%s\n' \
+            'openssl_conf = openssl_init' \
+            '' \
+            '[openssl_init]' \
+            'ssl_conf = ssl_sect' \
+            '' \
+            '[ssl_sect]' \
+            'system_default = system_default_sect' \
+            '' \
+            '[system_default_sect]' \
+            'MinProtocol = TLSv1' \
+            'CipherString = DEFAULT@SECLEVEL=0' \
+            > /etc/ssl/openssl-mcp.cnf; \
+    else \
+        cp /etc/ssl/openssl.cnf /etc/ssl/openssl-mcp.cnf; \
+    fi
+ENV OPENSSL_CONF=/etc/ssl/openssl-mcp.cnf
+
 # Install Microsoft ODBC Driver 18 for SQL Server
 RUN mkdir -p /usr/share/keyrings \
     && curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg \
@@ -101,9 +127,9 @@ USER mcpuser
 ENV PYTHONPATH="/app/src"
 ENV PYTHONUNBUFFERED=1
 
-# Health check for MCP server
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "from config import DatabaseConfig; print('OK')" || exit 1
+# No image-level HEALTHCHECK: the same image runs in stdio mode (python -m server)
+# and HTTP mode (python -m http_server), and only the latter has an endpoint to
+# probe. Define the healthcheck per service in docker-compose instead.
 
 # Default command for production
 CMD ["python", "-m", "server"]

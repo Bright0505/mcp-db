@@ -353,19 +353,11 @@ class SseMCPServer(BaseMCPServer):
 
 ### 5️⃣ API 層 (api/)
 
-#### 🛣️ routes.py
-**職責**: REST API 端點定義
+#### 📦 models.py
+**職責**: REST API 共用 Pydantic 模型（QueryRequest、CacheInvalidateRequest、HealthResponse）
 
-```python
-router = APIRouter(prefix="/api/v1")
-
-@router.get("/health")               # 健康檢查
-@router.get("/tools")                # 工具列表（使用 tools.get_all_tools()）
-@router.get("/schema")               # Schema 資訊
-@router.post("/query")               # 執行查詢
-@router.post("/execute")             # 執行命令
-@router.post("/cache/invalidate")    # 清除快取
-```
+> REST 路由本體定義在 `http_server.py`（唯一的 HTTP 實作）；
+> 舊的 `api/routes.py` + `main.py` 平行實作已於樣板整理時移除。
 
 #### 🎨 middleware.py
 **職責**: 中間件配置
@@ -377,31 +369,12 @@ def setup_middleware(app: FastAPI, config: AppConfig):
 
 ---
 
-## 🔄 統一入口點 (main.py)
+## 🔄 入口點
 
-```python
-async def run_stdio_mode():
-    """STDIO 模式（用於 MCP 客戶端）"""
-    db_manager = DatabaseManager.create_with_preload()
-    from mcp.stdio_server import run_stdio_server
-    await run_stdio_server()
-
-async def run_http_mode(host: str, port: int):
-    """HTTP 模式（REST API + SSE MCP）"""
-    # 創建 FastAPI 應用
-    # 設置中間件
-    # 註冊 REST API 路由
-    # 掛載 SSE MCP 端點
-    # 添加優雅關閉處理器
-    await server.serve()
-
-def main():
-    """主入口點，支援參數解析"""
-    if args.http:
-        asyncio.run(run_http_mode(host, port))
-    else:
-        asyncio.run(run_stdio_mode())
-```
+| 模式 | 指令 | 用途 |
+|------|------|------|
+| STDIO | `python -m server` | MCP 客戶端（Claude Desktop / Claude Code） |
+| HTTP | `python -m http_server` | REST API + SSE MCP（Open WebUI / MCPO） |
 
 ---
 
