@@ -32,6 +32,27 @@ if not _env_loaded:
     load_dotenv()
 
 
+def env(name: str, default: Optional[str] = None) -> Optional[str]:
+    """Read a config variable, preferring this module's ENV_PREFIX namespace.
+
+    Several modules may share one environment file (a single deployment .env)
+    while connecting to different databases, which collides on common names
+    like DB_HOST. Setting ENV_PREFIX gives a module its own namespace:
+
+        ENV_PREFIX=FENGTIEN_  ->  FENGTIEN_DB_HOST wins over DB_HOST
+
+    Unprefixed names remain the fallback, so anything the module does not
+    override is still inherited from the shared file. With no ENV_PREFIX set
+    this is plain os.getenv, so existing deployments are unaffected.
+    """
+    prefix = os.getenv("ENV_PREFIX", "")
+    if prefix:
+        value = os.getenv(f"{prefix}{name}")
+        if value is not None:
+            return value
+    return os.getenv(name, default)
+
+
 # Database type enum
 DatabaseType = Literal["mssql", "postgresql"]
 
@@ -102,40 +123,40 @@ class DatabaseConfig(BaseModel):
     def from_env(cls) -> "DatabaseConfig":
         """Create configuration from environment variables."""
         # Determine database type
-        db_type = os.getenv("DB_TYPE", "mssql").lower()
+        db_type = env("DB_TYPE", "mssql").lower()
 
         if db_type == "postgresql":
             # PostgreSQL configuration - only use universal DB_* variables
             return cls(
                 db_type="postgresql",
-                server=os.getenv("DB_HOST", "localhost"),
-                database=os.getenv("DB_NAME", "postgres"),
-                username=os.getenv("DB_USER"),
-                password=os.getenv("DB_PASSWORD"),
-                port=int(os.getenv("DB_PORT", "5432")),
-                timeout=int(os.getenv("DB_TIMEOUT", "30")),
-                command_timeout=int(os.getenv("DB_COMMAND_TIMEOUT", "60")),
-                sslmode=os.getenv("DB_SSLMODE", "prefer"),
-                schema=os.getenv("DB_SCHEMA", "public")
+                server=env("DB_HOST", "localhost"),
+                database=env("DB_NAME", "postgres"),
+                username=env("DB_USER"),
+                password=env("DB_PASSWORD"),
+                port=int(env("DB_PORT", "5432")),
+                timeout=int(env("DB_TIMEOUT", "30")),
+                command_timeout=int(env("DB_COMMAND_TIMEOUT", "60")),
+                sslmode=env("DB_SSLMODE", "prefer"),
+                schema=env("DB_SCHEMA", "public")
             )
         else:
             # SQL Server configuration (default) - only use universal DB_* variables
             # 優先使用環境變數，沒有則自動檢測驅動程式
-            driver = os.getenv("MSSQL_DRIVER") or detect_mssql_driver()
+            driver = env("MSSQL_DRIVER") or detect_mssql_driver()
 
             return cls(
                 db_type="mssql",
-                server=os.getenv("DB_HOST", "localhost"),
-                database=os.getenv("DB_NAME", "master"),
-                username=os.getenv("DB_USER"),
-                password=os.getenv("DB_PASSWORD"),
+                server=env("DB_HOST", "localhost"),
+                database=env("DB_NAME", "master"),
+                username=env("DB_USER"),
+                password=env("DB_PASSWORD"),
                 driver=driver,
-                port=int(os.getenv("DB_PORT", "1433")),
-                timeout=int(os.getenv("DB_TIMEOUT", "30")),
-                command_timeout=int(os.getenv("DB_COMMAND_TIMEOUT", "60")),
-                trusted_connection=os.getenv("MSSQL_TRUSTED_CONNECTION", "false").lower() == "true",
-                encrypt=os.getenv("MSSQL_ENCRYPT", "true").lower() == "true",
-                trust_server_certificate=os.getenv("MSSQL_TRUST_CERTIFICATE", "false").lower() == "true"
+                port=int(env("DB_PORT", "1433")),
+                timeout=int(env("DB_TIMEOUT", "30")),
+                command_timeout=int(env("DB_COMMAND_TIMEOUT", "60")),
+                trusted_connection=env("MSSQL_TRUSTED_CONNECTION", "false").lower() == "true",
+                encrypt=env("MSSQL_ENCRYPT", "true").lower() == "true",
+                trust_server_certificate=env("MSSQL_TRUST_CERTIFICATE", "false").lower() == "true"
             )
 
     def get_connection_string(self) -> str:
@@ -208,13 +229,13 @@ class SchemaConfig(BaseModel):
     def from_env(cls) -> "SchemaConfig":
         """Create schema configuration from environment variables."""
         return cls(
-            enable_cache=os.getenv("SCHEMA_ENABLE_CACHE", "true").lower() == "true",
-            cache_ttl_minutes=int(os.getenv("SCHEMA_CACHE_TTL_MINUTES", "60")),
-            preload_on_startup=os.getenv("SCHEMA_PRELOAD_ON_STARTUP", "true").lower() == "true",
-            schema_config_path=os.getenv("SCHEMA_CONFIG_PATH", "schemas_config/"),
-            enable_parallel_preload=os.getenv("SCHEMA_PARALLEL_PRELOAD", "true").lower() == "true",
-            max_concurrent_queries=int(os.getenv("SCHEMA_MAX_CONCURRENT_QUERIES", "5")),
-            strict_mode=os.getenv("SCHEMA_STRICT_MODE", "false").lower() == "true"
+            enable_cache=env("SCHEMA_ENABLE_CACHE", "true").lower() == "true",
+            cache_ttl_minutes=int(env("SCHEMA_CACHE_TTL_MINUTES", "60")),
+            preload_on_startup=env("SCHEMA_PRELOAD_ON_STARTUP", "true").lower() == "true",
+            schema_config_path=env("SCHEMA_CONFIG_PATH", "schemas_config/"),
+            enable_parallel_preload=env("SCHEMA_PARALLEL_PRELOAD", "true").lower() == "true",
+            max_concurrent_queries=int(env("SCHEMA_MAX_CONCURRENT_QUERIES", "5")),
+            strict_mode=env("SCHEMA_STRICT_MODE", "false").lower() == "true"
         )
 
     def get_config_path(self) -> Optional[Path]:
@@ -249,8 +270,8 @@ class QueryConfig(BaseModel):
     def from_env(cls) -> "QueryConfig":
         """Create query configuration from environment variables."""
         return cls(
-            max_query_length=int(os.getenv("MAX_QUERY_LENGTH", "50000")),
-            max_query_limit=int(os.getenv("MAX_QUERY_LIMIT", "10000"))
+            max_query_length=int(env("MAX_QUERY_LENGTH", "50000")),
+            max_query_limit=int(env("MAX_QUERY_LIMIT", "10000"))
         )
 
 
@@ -274,18 +295,18 @@ class ClaudeConfig(BaseModel):
         import logging
         logger = logging.getLogger(__name__)
 
-        api_key = os.getenv("CLAUDE_API_KEY")
+        api_key = env("CLAUDE_API_KEY")
         if not api_key:
             logger.info("CLAUDE_API_KEY not found - Claude AI features will be disabled")
             return cls(enabled=False)
 
         return cls(
             api_key=api_key,
-            api_url=os.getenv("CLAUDE_API_URL", "https://api.anthropic.com/v1/messages"),
-            model=os.getenv("CLAUDE_MODEL", "claude-3-5-haiku-20241022"),
-            max_tokens=int(os.getenv("CLAUDE_MAX_TOKENS", "4000")),
-            temperature=float(os.getenv("CLAUDE_TEMPERATURE", "0.1")),
-            timeout=int(os.getenv("CLAUDE_TIMEOUT", "30")),
+            api_url=env("CLAUDE_API_URL", "https://api.anthropic.com/v1/messages"),
+            model=env("CLAUDE_MODEL", "claude-3-5-haiku-20241022"),
+            max_tokens=int(env("CLAUDE_MAX_TOKENS", "4000")),
+            temperature=float(env("CLAUDE_TEMPERATURE", "0.1")),
+            timeout=int(env("CLAUDE_TIMEOUT", "30")),
             enabled=True  # Always enabled when API key is present
         )
     
@@ -315,9 +336,9 @@ class HTTPConfig(BaseModel):
     def from_env(cls) -> "HTTPConfig":
         """Create HTTP configuration from environment variables."""
         return cls(
-            rate_limit_default=os.getenv("RATE_LIMIT_DEFAULT", "100/minute"),
-            rate_limit_query=os.getenv("RATE_LIMIT_QUERY", "30/minute"),
-            cors_preflight_max_age=int(os.getenv("CORS_PREFLIGHT_MAX_AGE", "600"))
+            rate_limit_default=env("RATE_LIMIT_DEFAULT", "100/minute"),
+            rate_limit_query=env("RATE_LIMIT_QUERY", "30/minute"),
+            cors_preflight_max_age=int(env("CORS_PREFLIGHT_MAX_AGE", "600"))
         )
 
 
@@ -347,7 +368,7 @@ class AppConfig(BaseModel):
             query_config=QueryConfig.from_env(),
             claude_config=ClaudeConfig.from_env(),
             http_config=HTTPConfig.from_env(),
-            expose_sensitive_info=os.getenv("EXPOSE_SENSITIVE_INFO", "false").lower() == "true",
-            tool_prefix=os.getenv("TOOL_PREFIX", "db"),
-            server_name=os.getenv("MCP_SERVER_NAME", "mcp-db")
+            expose_sensitive_info=env("EXPOSE_SENSITIVE_INFO", "false").lower() == "true",
+            tool_prefix=env("TOOL_PREFIX", "db"),
+            server_name=env("MCP_SERVER_NAME", "mcp-db")
         )
