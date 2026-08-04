@@ -48,7 +48,20 @@ def setup_middleware(app: FastAPI, app_config: AppConfig):
         allow_origins=allowed_origins,
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        allow_headers=["Content-Type", "Authorization"],
+        # MCP 2026-07-28 (SEP-2243) makes Mcp-Method / Mcp-Name required on requests,
+        # and MCP-Protocol-Version carries the negotiated era. A browser-based MCP
+        # client cannot send them unless the preflight allows them, so they are listed
+        # here explicitly. Verified: without these, a preflight carrying
+        # Access-Control-Request-Headers: Mcp-Method is rejected with 400.
+        # Requests arriving via MCPO are server-to-server and unaffected either way.
+        allow_headers=[
+            "Content-Type",
+            "Authorization",
+            "Mcp-Method",
+            "Mcp-Name",
+            "MCP-Protocol-Version",
+            "Mcp-Session-Id",
+        ],
     )
 
     # GZip compression

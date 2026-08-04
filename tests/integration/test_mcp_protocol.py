@@ -8,15 +8,22 @@ schema 形狀改變、dispatch 斷掉）都不會被任何測試抓到，而 MCP
 
 分層設計
 --------
-本檔分兩層，目的是讓 SDK v1 → v2 的遷移只需改動一處：
+本檔分三層，越上層越貼近實際部署：
 
-* **第 1 層 — 不依賴 SDK 的 server/transport 機制（本檔絕大部分）**
+* **第 1 層 — 不依賴 SDK 的 server/transport 機制**
   只透過模組自己的 seam：`get_all_tools()`、`ToolRegistry.handle_tool()`。
   可抓到工具數量、名稱、prefix 機制、schema 形狀、dispatch、錯誤路徑等迴歸。
 
-* **第 2 層 — SDK wiring（僅 `TestProtocolWiring`）**
+* **第 2 層 — SDK wiring（`TestProtocolWiring`）**
   驗證 handler 確實掛上 `mcp.server.Server`、transport 為 Streamable HTTP、
-  以及 handler 回傳的是 v2 要求的具型別 Result。
+  以及 handler 回傳的是 v2 要求的具型別 Result。**不經過 HTTP。**
+
+* **第 3 層 — 兩個協議世代的相容性（`TestTwoEraCompatibility`）**
+  真正打 `/mcp` endpoint，驗證 handshake 世代（MCPO 走這條）與
+  無狀態的 2026-07-28 世代都能運作，且兩者公告的工具集合一致。
+  這一層是第 1、2 層抓不到的：它們都在 handler 契約層，
+  transport 設定壞掉不會被發現（實測：把 mount 路徑改回 `/sse`，
+  第 1、2 層全綠，只有第 3 層的 7 個測試轉紅）。
 
 Phase 3 遷移的實際結果（修正原先的說法）
 ----------------------------------------
@@ -36,6 +43,8 @@ import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+from mcp_types.version import HANDSHAKE_PROTOCOL_VERSIONS
 
 from tools import get_all_tools
 from tools.definitions import (
@@ -339,6 +348,21 @@ class TestProtocolWiring:
         assert result.is_error is True
         assert "Unknown tool" in result.content[0].text
 
+    def test_cache_hints_are_configured(self, mcp_server):
+        """SEP-2549：Server 必須帶著 cache hint 設定。
+
+        注意只驗證「有設定」。實際的 `ttlMs` / `cacheScope` 是由 SDK 在 dispatch 時
+        套到回應上，不是 handler 的回傳值，因此數值本身在
+        `TestTwoEraCompatibility.test_list_result_advertises_cache_hint` 於線路層驗證。
+        """
+        from mcp.server.caching import CacheHint
+
+        hints = getattr(mcp_server.mcp_server, "cache_hints", None)
+        assert hints, "Server 未設定 cache_hints"
+        assert "tools/list" in hints
+        assert isinstance(hints["tools/list"], CacheHint)
+        assert hints["tools/list"].ttl_ms > 0
+
     async def test_on_call_tool_converts_handler_exception(self, mcp_server):
         """v2 起未捕捉的例外會變成 JSON-RPC error；確認仍轉為可讀的 is_error 結果。"""
         import mcp_types as types
@@ -352,3 +376,253 @@ class TestProtocolWiring:
 
         assert result.is_error is True
         assert "boom" in result.content[0].text
+
+
+# =============================================================================
+# 第 3 層：兩個協議世代的相容性（HTTP 層，真正打 /mcp endpoint）
+# =============================================================================
+
+PROTOCOL_VERSION_META = "io.modelcontextprotocol/protocolVersion"
+CLIENT_INFO_META = "io.modelcontextprotocol/clientInfo"
+CLIENT_CAPABILITIES_META = "io.modelcontextprotocol/clientCapabilities"
+
+MODERN_VERSION = "2026-07-28"
+HANDSHAKE_VERSION = "2025-11-25"
+
+_ACCEPT = "application/json, text/event-stream"
+
+
+class TestTwoEraCompatibility:
+    """同一個 `/mcp` endpoint 必須同時服務兩個協議世代。
+
+    為什麼需要這一層
+    ----------------
+    第 1、2 層都在 handler 契約層驗證，**不經過 HTTP**，因此抓不到
+    「transport 換掉之後某個世代不通」這種問題。而目前的部署正好依賴兩個世代並存：
+
+      * MCPO（SDK 1.26.0）走 `initialize` handshake 世代
+      * 2026-07-28 客戶端走無 handshake 的 self-contained POST
+
+    Phase 3 之後這件事只有手動 curl 驗證過（ISSUES I-29），
+    只要有人改動 transport 設定，相容性斷掉不會被任何測試發現。本 class 補上這個守備。
+    """
+
+    @pytest.fixture
+    def client(self):
+        """啟動完整 ASGI app（含 lifespan，session manager 需要它才會 run）。
+
+        `initialize()` 會連資料庫，測試中換成 no-op；但 lifespan 本身必須執行，
+        否則 `StreamableHTTPSessionManager.run()` 不會啟動。
+        """
+        from fastapi.testclient import TestClient
+
+        with patch("http_server.HybridDatabaseManager"):
+            from http_server import MCPHTTPServer
+
+            server = MCPHTTPServer()
+            db = MagicMock()
+            db.get_cache_stats = MagicMock(return_value={"success": True, "entries": 0})
+            server.db_manager = db
+            server.initialize = AsyncMock(return_value=None)
+
+            with TestClient(server.app) as c:
+                yield c
+
+    # --- modern 世代（2026-07-28）-------------------------------------------
+
+    @staticmethod
+    def _modern_body(method, params=None):
+        return {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": method,
+            "params": {
+                **(params or {}),
+                "_meta": {
+                    PROTOCOL_VERSION_META: MODERN_VERSION,
+                    CLIENT_INFO_META: {"name": "pytest", "version": "1.0"},
+                    CLIENT_CAPABILITIES_META: {},
+                },
+            },
+        }
+
+    @staticmethod
+    def _modern_headers(method, tool_name=None):
+        h = {
+            "Accept": _ACCEPT,
+            "Content-Type": "application/json",
+            "MCP-Protocol-Version": MODERN_VERSION,
+            "Mcp-Method": method,
+        }
+        if tool_name:
+            h["Mcp-Name"] = tool_name
+        return h
+
+    def test_modern_list_tools(self, client):
+        r = client.post(
+            "/mcp/",
+            json=self._modern_body("tools/list"),
+            headers=self._modern_headers("tools/list"),
+        )
+        assert r.status_code == 200, r.text
+        result = r.json()["result"]
+        assert {t["name"] for t in result["tools"]} == {t.name for t in get_all_tools()}
+
+    def test_modern_call_tool(self, client):
+        name = make_tool_name(TOOL_CACHE_STATS)
+        r = client.post(
+            "/mcp/",
+            json=self._modern_body("tools/call", {"name": name, "arguments": {}}),
+            headers=self._modern_headers("tools/call", name),
+        )
+        assert r.status_code == 200, r.text
+        result = r.json()["result"]
+        assert result["content"], "modern 世代 tools/call 未回傳 content"
+
+    def test_list_result_advertises_cache_hint(self, client):
+        """SEP-2549：`tools/list` 回應必須帶 `ttlMs` 與 `cacheScope`。
+
+        在線路層驗證，因為這是 SDK 在 dispatch 時套上的，不是 handler 的回傳值。
+        `ttlMs` 由 `MCP_LIST_CACHE_TTL_SECONDS` 控制（預設 300 秒），
+        刻意與 server 端的 `SCHEMA_CACHE_TTL_MINUTES` 脫鉤 —— 後者可被
+        `*_schema_reload` 就地失效，前者是客戶端快取、無法遠端失效，
+        因此其值等於最壞情況的過時視窗。
+        """
+        import os
+
+        r = client.post(
+            "/mcp/",
+            json=self._modern_body("tools/list"),
+            headers=self._modern_headers("tools/list"),
+        )
+        assert r.status_code == 200, r.text
+        result = r.json()["result"]
+
+        expected_ms = int(os.getenv("MCP_LIST_CACHE_TTL_SECONDS", "300")) * 1000
+        assert result.get("ttlMs") == expected_ms, (
+            f"ttlMs 應為 {expected_ms}（MCP_LIST_CACHE_TTL_SECONDS 換算），實際 {result.get('ttlMs')}"
+        )
+        assert result["ttlMs"] <= 3600 * 1000, (
+            "客戶端快取無法遠端失效，advertised TTL 不應超過 1 小時"
+        )
+        assert result.get("cacheScope") == "private"
+
+    def test_modern_requires_mcp_method_header(self, client):
+        """SEP-2243：`Mcp-Method` 為必要 header，由 SDK 強制。
+
+        斷言 400 而非 `>= 400`：若只寫 `>= 400`，endpoint 整個不存在時的 404
+        也會讓這個測試通過 —— 那等於在 transport 壞掉時給出假的安全感。
+        """
+        headers = self._modern_headers("tools/list")
+        del headers["Mcp-Method"]
+
+        r = client.post("/mcp/", json=self._modern_body("tools/list"), headers=headers)
+
+        assert r.status_code == 400, f"缺少 Mcp-Method 應回 400，實際 {r.status_code}"
+        assert r.json()["error"]["code"] == -32020
+
+    def test_modern_requires_meta_envelope(self, client):
+        """protocol version / clientInfo / capabilities 必須走 `_meta` 信封。
+
+        同上，斷言確切的 400 與 `-32602`（SEP-2164 的 Invalid Params），
+        避免 404 冒充成「正確拒絕」。
+        """
+        body = {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
+
+        r = client.post("/mcp/", json=body, headers=self._modern_headers("tools/list"))
+
+        assert r.status_code == 400, f"缺少 _meta 信封應回 400，實際 {r.status_code}"
+        assert r.json()["error"]["code"] == -32602
+
+    # --- handshake 世代（MCPO 走這條）---------------------------------------
+
+    def _handshake_init(self, client):
+        r = client.post(
+            "/mcp/",
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": HANDSHAKE_VERSION,
+                    "capabilities": {},
+                    "clientInfo": {"name": "pytest", "version": "1.0"},
+                },
+            },
+            headers={"Accept": _ACCEPT, "Content-Type": "application/json"},
+        )
+        return r
+
+    def test_handshake_initialize_succeeds(self, client):
+        r = self._handshake_init(client)
+
+        assert r.status_code == 200, r.text
+        result = r.json()["result"]
+        assert result["protocolVersion"] in HANDSHAKE_PROTOCOL_VERSIONS, (
+            f"handshake 應協商到 handshake 世代，實際為 {result['protocolVersion']}"
+        )
+
+    def test_handshake_list_and_call_tools(self, client):
+        init = self._handshake_init(client)
+        assert init.status_code == 200
+
+        headers = {"Accept": _ACCEPT, "Content-Type": "application/json"}
+        sid = init.headers.get("mcp-session-id")
+        if sid:
+            headers["mcp-session-id"] = sid
+
+        listed = client.post(
+            "/mcp/", json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+            headers=headers,
+        )
+        assert listed.status_code == 200, listed.text
+        assert {t["name"] for t in listed.json()["result"]["tools"]} == {
+            t.name for t in get_all_tools()
+        }
+
+        name = make_tool_name(TOOL_CACHE_STATS)
+        called = client.post(
+            "/mcp/",
+            json={
+                "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                "params": {"name": name, "arguments": {}},
+            },
+            headers=headers,
+        )
+        assert called.status_code == 200, called.text
+        assert called.json()["result"]["content"], "handshake 世代 tools/call 未回傳 content"
+
+    # --- 跨世代一致性（本 class 最重要的斷言）-------------------------------
+
+    def test_both_eras_advertise_the_same_tools(self, client):
+        """兩個世代看到的工具集合必須完全相同。
+
+        這是部署上真正依賴的不變量：MCPO 走 handshake、新客戶端走 2026-07-28，
+        兩邊看到的能力若不一致，同一個問題會依客戶端而得到不同答案。
+        """
+        modern = client.post(
+            "/mcp/", json=self._modern_body("tools/list"),
+            headers=self._modern_headers("tools/list"),
+        )
+        assert modern.status_code == 200, modern.text
+
+        init = self._handshake_init(client)
+        assert init.status_code == 200
+        headers = {"Accept": _ACCEPT, "Content-Type": "application/json"}
+        sid = init.headers.get("mcp-session-id")
+        if sid:
+            headers["mcp-session-id"] = sid
+        handshake = client.post(
+            "/mcp/", json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+            headers=headers,
+        )
+        assert handshake.status_code == 200, handshake.text
+
+        modern_names = {t["name"] for t in modern.json()["result"]["tools"]}
+        handshake_names = {t["name"] for t in handshake.json()["result"]["tools"]}
+
+        assert modern_names == handshake_names, (
+            f"兩個世代公告的工具不一致\n"
+            f"  只在 modern: {sorted(modern_names - handshake_names)}\n"
+            f"  只在 handshake: {sorted(handshake_names - modern_names)}"
+        )

@@ -96,6 +96,8 @@ async def main():
         })()
         result = await handle_call_tool(request)
         content = result.get("content", []) if isinstance(result, dict) else result
+        # See http_server.py _on_call_tool: the tool layer's `isError` flag is not
+        # propagated yet because handlers report failure inconsistently.
         return types.CallToolResult(content=_to_content_blocks(content))
 
     async def on_list_prompts(ctx, params) -> types.ListPromptsResult:

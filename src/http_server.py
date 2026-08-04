@@ -23,6 +23,7 @@ from slowapi.util import get_remote_address
 
 import mcp_types as types
 from mcp.server import Server
+from mcp.server.caching import CacheHint
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 
 from core.config import DatabaseConfig, HTTPConfig
@@ -47,10 +48,33 @@ class MCPHTTPServer:
 
         self.server_name = os.getenv("MCP_SERVER_NAME", "mcp-db")
 
+        # SEP-2549: advertise how long a client may cache list results.
+        #
+        # Deliberately NOT tied to SCHEMA_CACHE_TTL_MINUTES, even though both concern
+        # schema freshness. They have different invalidation stories:
+        #   - the schema cache is server-side and can be flushed on demand
+        #     (*_schema_reload / *_cache_invalidate), so a long TTL there is harmless;
+        #   - this hint is client-side and cannot be invalidated remotely, so its value
+        #     is the worst-case staleness window.
+        # Deployments set SCHEMA_CACHE_TTL_MINUTES to 10080 (7 days); advertising that
+        # to clients would mean a table whitelist change could take a week to be seen,
+        # because tool descriptions embed table names from the schema config.
+        # A short TTL costs only an occasional extra tools/list round-trip.
+        #
+        # scope="private": descriptions reflect a deployment-specific table whitelist,
+        # so responses must not be cached in a shared/public cache.
+        list_cache_ttl_ms = int(os.getenv("MCP_LIST_CACHE_TTL_SECONDS", "300")) * 1000
+        cache_hints = {
+            "tools/list": CacheHint(ttl_ms=list_cache_ttl_ms, scope="private"),
+            "prompts/list": CacheHint(ttl_ms=list_cache_ttl_ms, scope="private"),
+            "resources/list": CacheHint(ttl_ms=list_cache_ttl_ms, scope="private"),
+        }
+
         # Handlers are passed as constructor arguments: the decorator API
         # (@server.list_tools() etc.) was removed in mcp SDK v2.
         self.mcp_server = Server(
             self.server_name,
+            cache_hints=cache_hints,
             on_list_tools=self._on_list_tools,
             on_call_tool=self._on_call_tool,
             on_list_prompts=self._on_list_prompts,
@@ -157,6 +181,14 @@ class MCPHTTPServer:
             )
 
         if isinstance(result, dict) and "content" in result:
+            # NOTE: the tool layer's `isError` flag is deliberately NOT propagated to
+            # CallToolResult.is_error yet. Measured behaviour when it was: MCPO turns
+            # is_error into an HTTP 500 for its OpenAPI clients, but the handlers do not
+            # all route failures through _error_response -- a bad table name became
+            # HTTP 500 while a bad SQL query stayed HTTP 200 with error text. That mix
+            # is worse for a model than either choice consistently.
+            # Enabling this needs all handlers to report failure the same way first;
+            # tracked as a follow-up rather than shipped half-done.
             return types.CallToolResult(content=self._to_content_blocks(result["content"]))
         return types.CallToolResult(content=self._to_content_blocks(result))
 
