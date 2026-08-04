@@ -1,6 +1,9 @@
 """ENV_PREFIX 命名空間測試
 
 讓多個模組共用同一份 env 檔而各自連不同資料庫。
+
+本檔的變數值刻意使用抽象名稱（`MYMODULE_` / `shared-*`），不寫任何特定
+部署或衍生模組的名字 —— 這是樣板，具體生態不應滲進來。
 """
 
 import importlib
@@ -24,29 +27,29 @@ class TestEnvPrefix:
 
     def test_prefixed_value_wins(self, monkeypatch, env_helper):
         """設了 ENV_PREFIX 時，命名空間變數優先於共用變數"""
-        monkeypatch.setenv("ENV_PREFIX", "FENGTIEN_")
+        monkeypatch.setenv("ENV_PREFIX", "MYMODULE_")
         monkeypatch.setenv("DB_HOST", "shared-host")
-        monkeypatch.setenv("FENGTIEN_DB_HOST", "module-host")
+        monkeypatch.setenv("MYMODULE_DB_HOST", "module-host")
         assert env_helper("DB_HOST") == "module-host"
 
     def test_falls_back_to_shared_when_not_overridden(self, monkeypatch, env_helper):
         """命名空間沒設的變數，仍繼承共用值"""
-        monkeypatch.setenv("ENV_PREFIX", "FENGTIEN_")
-        monkeypatch.delenv("FENGTIEN_DB_TIMEOUT", raising=False)
+        monkeypatch.setenv("ENV_PREFIX", "MYMODULE_")
+        monkeypatch.delenv("MYMODULE_DB_TIMEOUT", raising=False)
         monkeypatch.setenv("DB_TIMEOUT", "30")
         assert env_helper("DB_TIMEOUT") == "30"
 
     def test_default_used_when_neither_set(self, monkeypatch, env_helper):
-        monkeypatch.setenv("ENV_PREFIX", "FENGTIEN_")
-        monkeypatch.delenv("FENGTIEN_DB_PORT", raising=False)
+        monkeypatch.setenv("ENV_PREFIX", "MYMODULE_")
+        monkeypatch.delenv("MYMODULE_DB_PORT", raising=False)
         monkeypatch.delenv("DB_PORT", raising=False)
         assert env_helper("DB_PORT", "1433") == "1433"
 
     def test_empty_prefixed_value_is_respected(self, monkeypatch, env_helper):
         """命名空間內顯式設為空字串，不應被共用值蓋掉"""
-        monkeypatch.setenv("ENV_PREFIX", "FENGTIEN_")
+        monkeypatch.setenv("ENV_PREFIX", "MYMODULE_")
         monkeypatch.setenv("DB_USER", "shared-user")
-        monkeypatch.setenv("FENGTIEN_DB_USER", "")
+        monkeypatch.setenv("MYMODULE_DB_USER", "")
         assert env_helper("DB_USER") == ""
 
 
@@ -56,19 +59,19 @@ class TestDatabaseConfigWithPrefix:
         import core.config as config
         importlib.reload(config)
 
-        # 共用 env：data-lake PostgreSQL
+        # 共用 env：部署層共用的 PostgreSQL
         monkeypatch.setenv("DB_TYPE", "postgresql")
-        monkeypatch.setenv("DB_HOST", "data-lake-host")
-        monkeypatch.setenv("DB_NAME", "data-lake")
+        monkeypatch.setenv("DB_HOST", "shared-pg-host")
+        monkeypatch.setenv("DB_NAME", "shared-db")
         monkeypatch.setenv("DB_PORT", "5432")
         # 模組命名空間：另一台 SQL Server
-        monkeypatch.setenv("ENV_PREFIX", "FENGTIEN_")
-        monkeypatch.setenv("FENGTIEN_DB_TYPE", "mssql")
-        monkeypatch.setenv("FENGTIEN_DB_HOST", "mssql-host")
-        monkeypatch.setenv("FENGTIEN_DB_NAME", "master")
-        monkeypatch.setenv("FENGTIEN_DB_PORT", "1433")
-        monkeypatch.setenv("FENGTIEN_DB_USER", "sa")
-        monkeypatch.setenv("FENGTIEN_DB_PASSWORD", "pw")
+        monkeypatch.setenv("ENV_PREFIX", "MYMODULE_")
+        monkeypatch.setenv("MYMODULE_DB_TYPE", "mssql")
+        monkeypatch.setenv("MYMODULE_DB_HOST", "mssql-host")
+        monkeypatch.setenv("MYMODULE_DB_NAME", "master")
+        monkeypatch.setenv("MYMODULE_DB_PORT", "1433")
+        monkeypatch.setenv("MYMODULE_DB_USER", "sa")
+        monkeypatch.setenv("MYMODULE_DB_PASSWORD", "pw")
 
         cfg = config.DatabaseConfig.from_env()
         assert cfg.db_type == "mssql"
@@ -84,9 +87,9 @@ class TestDatabaseConfigWithPrefix:
 
         monkeypatch.delenv("ENV_PREFIX", raising=False)
         monkeypatch.setenv("DB_TYPE", "postgresql")
-        monkeypatch.setenv("DB_HOST", "data-lake-host")
-        monkeypatch.setenv("DB_NAME", "data-lake")
+        monkeypatch.setenv("DB_HOST", "shared-pg-host")
+        monkeypatch.setenv("DB_NAME", "shared-db")
 
         cfg = config.DatabaseConfig.from_env()
         assert cfg.db_type == "postgresql"
-        assert cfg.server == "data-lake-host"
+        assert cfg.server == "shared-pg-host"
