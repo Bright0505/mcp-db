@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 
 class MCPHTTPServer:
-    """HTTP server wrapper for MCP database tools with SSE support."""
+    """HTTP server wrapper for MCP database tools over Streamable HTTP."""
 
     def __init__(self, config: Optional[DatabaseConfig] = None):
         self.config = config or DatabaseConfig.from_env()
@@ -380,6 +380,22 @@ class MCPHTTPServer:
         return self._success_response(result)
 
     def _error_response(self, error_message: str) -> Dict[str, Any]:
+        """Report a REST-layer failure in the response body, with HTTP status 200.
+
+        This is deliberate, not an oversight: failures are signalled by
+        `success: false` plus a human-readable `error`, and the HTTP status stays 200.
+        The Open WebUI Workspace Tools downstream all inspect the body
+        (`success` / `data.success`), so switching to 4xx/5xx would break them.
+
+        The invariant that matters is that a failure must never look like an empty
+        success -- see `_wrap_result`, which lifts a manager's inner
+        `{"success": False}` into this envelope. Tests assert the body semantics
+        rather than the status code (test_query_validation_failure,
+        test_database_error_handling).
+
+        Trade-off to be aware of: generic HTTP clients, proxies and monitoring
+        cannot distinguish failure from success without parsing the body.
+        """
         return {
             "success": False,
             "error": error_message,
@@ -408,9 +424,9 @@ def run_http_server(
             format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
         )
 
-        logger.info(f"Starting MCP Database HTTP API + SSE server at http://{host}:{port}")
+        logger.info(f"Starting MCP Database HTTP API + Streamable HTTP server at http://{host}:{port}")
         logger.info(f"API docs: http://{host}:{port}/docs")
-        logger.info(f"MCP SSE endpoint: http://{host}:{port}/sse")
+        logger.info(f"MCP endpoint (Streamable HTTP): http://{host}:{port}/mcp/")
 
         config_uvicorn = uvicorn.Config(
             server.app,
