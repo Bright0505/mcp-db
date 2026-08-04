@@ -1,6 +1,12 @@
 """HTTP server wrapper for MCP Multi-Database Connector.
 
-Provides REST API access and MCP SSE (Server-Sent Events) support for external integrations.
+Provides REST API access and MCP over Streamable HTTP for external integrations.
+
+Transport note: Streamable HTTP replaces the previous SSE transport. One endpoint
+serves both protocol eras -- the `initialize` handshake era (up to 2025-11-25) and
+the stateless 2026-07-28 era -- so existing clients keep working unchanged while
+2026-07-28 clients are also accepted. Era selection is handled by the SDK's
+StreamableHTTPSessionManager; the module does not negotiate versions itself.
 """
 
 import asyncio
@@ -15,9 +21,10 @@ import uvicorn
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
+import mcp_types as types
 from mcp.server import Server
-from mcp.server.sse import SseServerTransport
-from mcp.types import Tool, Prompt, Resource
+from mcp.server.caching import CacheHint
+from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 
 from core.config import DatabaseConfig, HTTPConfig
 from database.async_manager import HybridDatabaseManager
@@ -30,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 
 class MCPHTTPServer:
-    """HTTP server wrapper for MCP database tools with SSE support."""
+    """HTTP server wrapper for MCP database tools over Streamable HTTP."""
 
     def __init__(self, config: Optional[DatabaseConfig] = None):
         self.config = config or DatabaseConfig.from_env()
@@ -40,53 +47,73 @@ class MCPHTTPServer:
         self.tool_registry = ToolRegistry()
 
         self.server_name = os.getenv("MCP_SERVER_NAME", "mcp-db")
-        self.mcp_server = Server(self.server_name)
-        self.sse_transport = SseServerTransport("/messages")
 
-        self._setup_mcp_handlers()
+        # SEP-2549: advertise how long a client may cache list results.
+        #
+        # Deliberately NOT tied to SCHEMA_CACHE_TTL_MINUTES, even though both concern
+        # schema freshness. They have different invalidation stories:
+        #   - the schema cache is server-side and can be flushed on demand
+        #     (*_schema_reload / *_cache_invalidate), so a long TTL there is harmless;
+        #   - this hint is client-side and cannot be invalidated remotely, so its value
+        #     is the worst-case staleness window.
+        # Deployments set SCHEMA_CACHE_TTL_MINUTES to 10080 (7 days); advertising that
+        # to clients would mean a table whitelist change could take a week to be seen,
+        # because tool descriptions embed table names from the schema config.
+        # A short TTL costs only an occasional extra tools/list round-trip.
+        #
+        # scope="private": descriptions reflect a deployment-specific table whitelist,
+        # so responses must not be cached in a shared/public cache.
+        list_cache_ttl_ms = int(os.getenv("MCP_LIST_CACHE_TTL_SECONDS", "300")) * 1000
+        cache_hints = {
+            "tools/list": CacheHint(ttl_ms=list_cache_ttl_ms, scope="private"),
+            "prompts/list": CacheHint(ttl_ms=list_cache_ttl_ms, scope="private"),
+            "resources/list": CacheHint(ttl_ms=list_cache_ttl_ms, scope="private"),
+        }
+
+        # Handlers are passed as constructor arguments: the decorator API
+        # (@server.list_tools() etc.) was removed in mcp SDK v2.
+        self.mcp_server = Server(
+            self.server_name,
+            cache_hints=cache_hints,
+            on_list_tools=self._on_list_tools,
+            on_call_tool=self._on_call_tool,
+            on_list_prompts=self._on_list_prompts,
+            on_list_resources=self._on_list_resources,
+        )
+
+        # stateless=True matches the 2026-07-28 stateless model and keeps the
+        # handshake era working; there is no server-side session to pin a client to,
+        # so no sticky routing is required in front of this service.
+        self.session_manager = StreamableHTTPSessionManager(
+            app=self.mcp_server,
+            stateless=True,
+            json_response=True,
+        )
 
         @asynccontextmanager
         async def lifespan(app: FastAPI):
-            await self.initialize()
-            logger.info("Service started, schema preloaded")
-            yield
-            logger.info("Service shutting down")
+            async with self.session_manager.run():
+                await self.initialize()
+                logger.info("Service started, schema preloaded")
+                yield
+                logger.info("Service shutting down")
 
         self.app = FastAPI(
             title="MCP Database API",
-            description="REST API & SSE for Multi-Database Connector via MCP",
+            description="REST API & MCP over Streamable HTTP for Multi-Database Connector",
             version="1.2.0",
             docs_url="/docs",
             redoc_url="/redoc",
             lifespan=lifespan
         )
 
-        # Mount MCP SSE ASGI sub-app
-        async def mcp_sse_asgi_app(scope, receive, send):
-            path = scope.get("path", "/")
-            method = scope.get("method", "GET")
+        # Mount the MCP endpoint. The SDK handles method routing, protocol-era
+        # detection and the Mcp-Method / Mcp-Name / MCP-Protocol-Version header
+        # requirements, so no hand-written ASGI dispatch is needed here.
+        async def mcp_asgi_app(scope, receive, send):
+            await self.session_manager.handle_request(scope, receive, send)
 
-            if path == "/sse/" and method == "GET":
-                async with self.sse_transport.connect_sse(scope, receive, send) as streams:
-                    await self.mcp_server.run(
-                        streams[0],
-                        streams[1],
-                        self.mcp_server.create_initialization_options()
-                    )
-            elif path.startswith("/sse/messages") and method == "POST":
-                await self.sse_transport.handle_post_message(scope, receive, send)
-            else:
-                await send({
-                    'type': 'http.response.start',
-                    'status': 404,
-                    'headers': [[b'content-type', b'text/plain']],
-                })
-                await send({
-                    'type': 'http.response.body',
-                    'body': b'Not Found',
-                })
-
-        self.app.mount("/sse", mcp_sse_asgi_app)
+        self.app.mount("/mcp", mcp_asgi_app)
 
         # Apply all middleware (CORS, GZip, rate limiting)
         from core.config import AppConfig
@@ -98,38 +125,78 @@ class MCPHTTPServer:
 
         self._register_routes()
 
-    def _setup_mcp_handlers(self):
-        """Setup MCP protocol handlers."""
+    @staticmethod
+    def _to_content_blocks(content: Any) -> List[types.ContentBlock]:
+        """Convert the handlers' {"type": "text", "text": ...} dicts into typed blocks.
 
-        @self.mcp_server.list_tools()
-        async def list_tools() -> List[Tool]:
-            return get_all_tools()
+        SDK v2 no longer wraps handler return values automatically, so the tool layer's
+        plain-dict output has to be converted here. Keeping the conversion at this
+        boundary is deliberate: the handlers under ToolRegistry stay free of SDK types.
+        """
+        blocks: List[types.ContentBlock] = []
+        for item in content if isinstance(content, list) else [content]:
+            if isinstance(item, dict) and item.get("type") == "text":
+                blocks.append(types.TextContent(type="text", text=str(item.get("text", ""))))
+            elif isinstance(item, str):
+                blocks.append(types.TextContent(type="text", text=item))
+            else:
+                blocks.append(types.TextContent(type="text", text=str(item)))
+        return blocks
 
-        @self.mcp_server.call_tool()
-        async def handle_tool_call(name: str, arguments: dict) -> list:
-            if not self.db_manager:
-                return [{"type": "text", "text": "Error: Database not initialized"}]
+    async def _on_list_tools(self, ctx, params) -> types.ListToolsResult:
+        return types.ListToolsResult(tools=get_all_tools())
 
-            try:
-                request = type('CallToolRequest', (), {
-                    'name': name,
-                    'arguments': arguments or {}
-                })()
-                result = await self.tool_registry.handle_tool(request, self.db_manager)
-                if isinstance(result, dict) and "content" in result:
-                    return result["content"]
-                return result if isinstance(result, list) else [result]
-            except Exception as e:
-                logger.error(f"Tool execution error: {e}")
-                return [{"type": "text", "text": f"Error: {str(e)}"}]
+    async def _on_call_tool(
+        self, ctx, params: types.CallToolRequestParams
+    ) -> types.CallToolResult:
+        if not self.db_manager:
+            return types.CallToolResult(
+                content=[types.TextContent(type="text", text="Error: Database not initialized")],
+                is_error=True,
+            )
 
-        @self.mcp_server.list_prompts()
-        async def list_prompts() -> List[Prompt]:
-            return []
+        # Same duck-typed request the tool layer has always received: handlers only read
+        # .name / .arguments, which is why they need no changes for the SDK upgrade.
+        request = type('CallToolRequest', (), {
+            'name': params.name,
+            'arguments': params.arguments or {}
+        })()
 
-        @self.mcp_server.list_resources()
-        async def list_resources() -> List[Resource]:
-            return []
+        try:
+            result = await self.tool_registry.handle_tool(request, self.db_manager)
+        except Exception as e:
+            # v2 turns an uncaught exception into a JSON-RPC error instead of a
+            # CallToolResult(is_error=True). Catching it here preserves the previous
+            # behaviour, where a failing tool still returns a readable result.
+            logger.error(f"Tool execution error: {e}", exc_info=True)
+            return types.CallToolResult(
+                content=[types.TextContent(type="text", text=f"Error: {str(e)}")],
+                is_error=True,
+            )
+
+        if result is None:
+            return types.CallToolResult(
+                content=[types.TextContent(type="text", text=f"Unknown tool: {params.name}")],
+                is_error=True,
+            )
+
+        if isinstance(result, dict) and "content" in result:
+            # NOTE: the tool layer's `isError` flag is deliberately NOT propagated to
+            # CallToolResult.is_error yet. Measured behaviour when it was: MCPO turns
+            # is_error into an HTTP 500 for its OpenAPI clients, but the handlers do not
+            # all route failures through _error_response -- a bad table name became
+            # HTTP 500 while a bad SQL query stayed HTTP 200 with error text. That mix
+            # is worse for a model than either choice consistently.
+            # Enabling this needs all handlers to report failure the same way first;
+            # tracked as a follow-up rather than shipped half-done.
+            return types.CallToolResult(content=self._to_content_blocks(result["content"]))
+        return types.CallToolResult(content=self._to_content_blocks(result))
+
+    async def _on_list_prompts(self, ctx, params) -> types.ListPromptsResult:
+        return types.ListPromptsResult(prompts=[])
+
+    async def _on_list_resources(self, ctx, params) -> types.ListResourcesResult:
+        return types.ListResourcesResult(resources=[])
 
     async def initialize(self):
         """Initialize database manager asynchronously."""
@@ -345,6 +412,22 @@ class MCPHTTPServer:
         return self._success_response(result)
 
     def _error_response(self, error_message: str) -> Dict[str, Any]:
+        """Report a REST-layer failure in the response body, with HTTP status 200.
+
+        This is deliberate, not an oversight: failures are signalled by
+        `success: false` plus a human-readable `error`, and the HTTP status stays 200.
+        The Open WebUI Workspace Tools downstream all inspect the body
+        (`success` / `data.success`), so switching to 4xx/5xx would break them.
+
+        The invariant that matters is that a failure must never look like an empty
+        success -- see `_wrap_result`, which lifts a manager's inner
+        `{"success": False}` into this envelope. Tests assert the body semantics
+        rather than the status code (test_query_validation_failure,
+        test_database_error_handling).
+
+        Trade-off to be aware of: generic HTTP clients, proxies and monitoring
+        cannot distinguish failure from success without parsing the body.
+        """
         return {
             "success": False,
             "error": error_message,
@@ -373,9 +456,9 @@ def run_http_server(
             format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
         )
 
-        logger.info(f"Starting MCP Database HTTP API + SSE server at http://{host}:{port}")
+        logger.info(f"Starting MCP Database HTTP API + Streamable HTTP server at http://{host}:{port}")
         logger.info(f"API docs: http://{host}:{port}/docs")
-        logger.info(f"MCP SSE endpoint: http://{host}:{port}/sse")
+        logger.info(f"MCP endpoint (Streamable HTTP): http://{host}:{port}/mcp/")
 
         config_uvicorn = uvicorn.Config(
             server.app,

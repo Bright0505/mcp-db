@@ -29,8 +29,23 @@ class ToolHandler(ABC):
         pass
 
     def _error_response(self, error_message: str) -> Dict[str, Any]:
-        """Create standardized error response."""
+        """Create standardized error response.
+
+        The `isError` flag is machine-readable and sits alongside `content`, not inside
+        it, so it never reaches the model as text.
+
+        Not yet consumed by the protocol layer: propagating it to
+        `CallToolResult.is_error` made failures inconsistent, because not every handler
+        routes failure through this method (some format their own error text and return
+        it as a success). Making failure reporting uniform across handlers is a
+        prerequisite -- see the migration ISSUES log.
+
+        Why it matters: without the flag a failed tool call is indistinguishable from a
+        successful one carrying error text, and a model that cannot tell the difference
+        may present the failure as if it were data.
+        """
         return {
+            "isError": True,
             "content": [{
                 "type": "text",
                 "text": f"❌ Error: {error_message}"

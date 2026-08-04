@@ -30,7 +30,7 @@ class TestHealthEndpoint:
 
             server = MCPHTTPServer()
             server.db_manager = mock_db_manager
-            server._setup_routes()
+            server._register_routes()
 
             return TestClient(server.app)
 
@@ -80,7 +80,7 @@ class TestConnectionEndpoint:
 
             server = MCPHTTPServer()
             server.db_manager = mock_db_manager
-            server._setup_routes()
+            server._register_routes()
 
             return TestClient(server.app)
 
@@ -132,7 +132,7 @@ class TestQueryEndpoint:
 
                 server = MCPHTTPServer()
                 server.db_manager = mock_db_manager
-                server._setup_routes()
+                server._register_routes()
 
                 return TestClient(server.app)
 
@@ -177,7 +177,16 @@ class TestQueryEndpoint:
         assert call_args is not None
 
     def test_query_validation_failure(self, test_client):
-        """❌ 查詢驗證失敗"""
+        """❌ 查詢驗證失敗 —— 錯誤走 response body，HTTP status 仍為 200
+
+        這是刻意的設計（見 http_server.py 的 `_error_response`）：REST 層以
+        `success: false` + `error` 表達失敗，不使用 4xx/5xx。理由是下游的
+        Open WebUI Workspace Tools 都在檢查 body 的 `data.success`，
+        改用 HTTP status 會破壞它們。
+
+        因此本測試斷言的是 **body 語意**：失敗必須明確標示，且必須帶出可讀的原因
+        （避免退回成「回 200 但看起來像空結果」的錯誤遮蔽問題）。
+        """
         with patch("http_server.SQLValidator") as MockValidator:
             MockValidator.validate_query.return_value = (False, "Dangerous keyword 'DROP' not allowed")
 
@@ -186,7 +195,11 @@ class TestQueryEndpoint:
                 json={"query": "DROP TABLE users"}
             )
 
-            assert response.status_code in [400, 422]  # 驗證失敗
+            assert response.status_code == 200
+            body = response.json()
+            assert body["success"] is False
+            assert body.get("error"), "驗證失敗必須帶出錯誤訊息，不可只有 success: false"
+            assert "DROP" in body["error"], f"錯誤訊息應包含實際原因，實際為: {body['error']}"
 
     def test_query_missing_query_param(self, test_client):
         """❌ 缺少查詢參數"""
@@ -234,7 +247,7 @@ class TestSchemaEndpoints:
 
             server = MCPHTTPServer()
             server.db_manager = mock_db_manager
-            server._setup_routes()
+            server._register_routes()
 
             return TestClient(server.app)
 
@@ -310,7 +323,7 @@ class TestCacheEndpoints:
 
             server = MCPHTTPServer()
             server.db_manager = mock_db_manager
-            server._setup_routes()
+            server._register_routes()
 
             return TestClient(server.app)
 
@@ -324,7 +337,7 @@ class TestCacheEndpoints:
 
     def test_get_cache_debug_info(self, test_client):
         """✅ 獲取快取調試資訊"""
-        response = test_client.get("/api/v1/cache/debug")
+        response = test_client.get("/api/v1/admin/cache-debug")
 
         assert response.status_code == 200
         data = response.json()
@@ -378,7 +391,7 @@ class TestToolsEndpoint:
 
             server = MCPHTTPServer()
             server.db_manager = mock_db_manager
-            server._setup_routes()
+            server._register_routes()
 
             return TestClient(server.app)
 
@@ -406,7 +419,7 @@ class TestRateLimiting:
 
             server = MCPHTTPServer()
             server.db_manager = mock_db_manager
-            server._setup_routes()
+            server._register_routes()
 
             return TestClient(server.app)
 
@@ -443,12 +456,18 @@ class TestErrorHandling:
 
             server = MCPHTTPServer()
             server.db_manager = mock_db_manager
-            server._setup_routes()
+            server._register_routes()
 
             return TestClient(server.app)
 
     def test_database_error_handling(self, test_client_with_failing_db):
-        """❌ 資料庫錯誤處理"""
+        """❌ 資料庫錯誤處理 —— 錯誤走 response body，HTTP status 仍為 200
+
+        同 `test_query_validation_failure`：REST 層刻意不使用 4xx/5xx。
+        重點在於 DB 失敗**不可**被包成看起來成功的空結果 —— 這正是
+        `_wrap_result` 要解決的問題（在它之前外層 `success` 恆為 true，
+        錯誤只藏在 `data.success` 裡，呼叫端會把失敗當成查無資料）。
+        """
         with patch("http_server.SQLValidator") as MockValidator:
             MockValidator.validate_query.return_value = (True, "")
 
@@ -457,8 +476,10 @@ class TestErrorHandling:
                 json={"query": "SELECT * FROM users"}
             )
 
-            # 應該返回錯誤狀態碼
-            assert response.status_code >= 400
+            assert response.status_code == 200
+            body = response.json()
+            assert body["success"] is False, "DB 失敗不可回報為成功"
+            assert body.get("error"), "DB 失敗必須帶出錯誤訊息"
 
     def test_invalid_json_payload(self):
         """❌ 無效的 JSON 載荷"""
@@ -470,7 +491,7 @@ class TestErrorHandling:
 
             server = MCPHTTPServer()
             server.db_manager = mock_db_manager
-            server._setup_routes()
+            server._register_routes()
 
             client = TestClient(server.app)
 
@@ -498,15 +519,24 @@ class TestCORSHeaders:
 
             server = MCPHTTPServer()
             server.db_manager = mock_db_manager
-            server._setup_routes()
+            server._register_routes()
 
             return TestClient(server.app)
 
     def test_cors_headers_present(self, test_client):
-        """✅ CORS 標頭存在"""
-        response = test_client.options("/api/v1/health")
+        """✅ CORS preflight 成功
 
-        # CORS OPTIONS 請求應該成功
+        CORSMiddleware 只在請求帶 Origin + Access-Control-Request-Method 時才攔截 OPTIONS；
+        裸 OPTIONS 沒有對應路由，回 405 是正確的 HTTP 行為，不是 CORS 壞掉。
+        """
+        response = test_client.options(
+            "/api/v1/health",
+            headers={
+                "Origin": "http://localhost:3000",
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+
         assert response.status_code in [200, 204]
 
     def test_cors_allows_origin(self, test_client):
@@ -540,7 +570,7 @@ class TestResponseFormat:
 
             server = MCPHTTPServer()
             server.db_manager = mock_db_manager
-            server._setup_routes()
+            server._register_routes()
 
             return TestClient(server.app)
 
