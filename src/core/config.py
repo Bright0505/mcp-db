@@ -39,7 +39,7 @@ def env(name: str, default: Optional[str] = None) -> Optional[str]:
     while connecting to different databases, which collides on common names
     like DB_HOST. Setting ENV_PREFIX gives a module its own namespace:
 
-        ENV_PREFIX=FENGTIEN_  ->  FENGTIEN_DB_HOST wins over DB_HOST
+        ENV_PREFIX=MYMODULE_  ->  MYMODULE_DB_HOST wins over DB_HOST
 
     Unprefixed names remain the fallback, so anything the module does not
     override is still inherited from the shared file. With no ENV_PREFIX set
