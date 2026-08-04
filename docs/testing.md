@@ -10,54 +10,56 @@ MCP Multi-Database Connector 提供完整的測試套件，包括單元測試和
 
 ```
 tests/
-├── unit/                  # 單元測試（101 個測試）
-│   ├── test_validators.py        # SQL 驗證器測試（50 個）
-│   ├── test_schema_cache.py      # Schema 快取測試（29 個）
-│   └── test_async_manager.py     # 異步管理器測試（22 個）
-└── integration/           # 整合測試（28 個測試）
-    └── test_api_endpoints.py     # HTTP API 端點測試
+├── unit/                             # 單元測試
+│   ├── test_validators.py            # SQL 驗證器（含安全攔截）
+│   ├── test_schema_cache.py          # Schema 快取（LFU+LRU、TTL、預載）
+│   ├── test_async_manager.py         # 異步資料庫管理
+│   └── test_env_prefix.py            # TOOL_PREFIX 環境變數行為
+└── integration/                      # 整合測試
+    ├── test_api_endpoints.py         # REST API 端點
+    └── test_mcp_protocol.py          # MCP 協議層（三層設計，見下）
 ```
 
-## ✅ 單元測試
+## ✅ 測試統計
 
-### 測試統計
+> **本檔不再內嵌測試數與覆蓋率數字。** 舊版寫死「101 個測試／27% 覆蓋率」，
+> 在測試增加後就與現況不符，而文件本身無從察覺。請直接實測：
 
-| 指標 | 數值 |
-|------|------|
-| 總測試數 | 101 |
-| 通過率 | 100% |
-| 執行時間 | ~1.8 秒 |
-| 總體覆蓋率 | 27% |
+```bash
+docker exec {module}-http python -m pytest /app/tests -q --cov=src --cov-report=term
+```
 
-### 關鍵模組覆蓋率
+（開發用容器名為 `{module}-http-dev`；正式 image 若未包含 `tests/` 與 pytest，
+請改在開發 compose 下執行。）
 
-| 模組 | 覆蓋率 | 評級 |
-|------|--------|------|
-| `tools/validators.py` | 96% | ⭐⭐⭐ 優秀 |
-| `database/async_manager.py` | 88% | ⭐⭐⭐ 優秀 |
-| `core/exceptions.py` | 79% | ⭐⭐ 良好 |
-| `tools/base.py` | 73% | ⭐⭐ 良好 |
-| `database/schema/static_loader.py` | 69% | ⭐ 及格 |
-| `core/config.py` | 66% | ⭐ 及格 |
-| `database/schema/cache.py` | 64% | ⭐ 及格 |
+### 覆蓋率的重點模組
+
+覆蓋率不平均是刻意的 —— 安全與協議相關的模組維持高覆蓋，
+純 I/O 包裝與格式化模組偏低：
+
+| 模組 | 為什麼重要 |
+|------|-----------|
+| `tools/validators.py` | SQL 安全攔截的唯一入口（含門市／關鍵字管制），必須高覆蓋 |
+| `tools/registry.py` | 工具路由，錯了會整批工具失效 |
+| `database/async_manager.py` | 連線池與並發查詢 |
+| `database/schema/cache.py` | 快取正確性直接影響回答是否用到舊 schema |
+| `http_server.py` | REST 與 MCP 兩個對外面 |
 
 ### 測試模組說明
 
-#### 1. test_validators.py (50 個測試)
-**覆蓋率**: 96%
+#### 1. test_validators.py
 
 測試 SQL 安全驗證功能：
-- SQL 注入防護（31 個測試）
-- 輸入驗證（15 個測試）
-- 安全邊緣案例（4 個測試）
+- SQL 注入防護
+- 輸入驗證
+- 安全邊緣案例
 
 **關鍵測試**：
 - 阻止危險 SQL 語句（DELETE, DROP, EXEC 等）
 - SQL 注入攻擊防護（UNION, 註解等）
 - 輸入長度和格式驗證
 
-#### 2. test_schema_cache.py (29 個測試)
-**覆蓋率**: 64%
+#### 2. test_schema_cache.py
 
 測試 Schema 快取系統：
 - 基本快取操作（設定、取得、失效）
@@ -72,8 +74,7 @@ tests/
 - 線程安全性
 - 性能測試
 
-#### 3. test_async_manager.py (22 個測試)
-**覆蓋率**: 88%
+#### 3. test_async_manager.py
 
 測試異步資料庫管理：
 - 異步連接池
@@ -87,19 +88,55 @@ tests/
 - 連接失敗處理
 - 查詢錯誤處理
 
+#### 4. test_env_prefix.py
+
+測試 `TOOL_PREFIX` 環境變數如何影響工具名稱生成（`make_tool_name()`），
+確保同一份程式碼在不同模組下產生正確的工具名。
+
+## 🔌 MCP 協議層測試（test_mcp_protocol.py）
+
+協議層在 2026-08-04 的遷移前**覆蓋率為 0** —— 沒有任何測試會在 transport
+或 SDK 行為改變時失敗。這個檔案補上該守備，分三層：
+
+| 層 | 驗證什麼 | 是否經過 HTTP |
+|----|---------|--------------|
+| 第 1 層 | 工具定義契約：名稱、`inputSchema` 形狀、JSON Schema 版本 | ❌ |
+| 第 2 層 | handler 契約：`on_list_tools` / `on_call_tool` 的回傳型別、錯誤路徑 | ❌ |
+| 第 3 層 | **兩個協議世代並存**：同一個 `/mcp` 端點分別以 `initialize` handshake 與無 handshake 的 2026-07-28 請求打進去 | ✅ |
+
+第 3 層是不可省的：前兩層都在 handler 契約層驗證、不經過 HTTP，因此抓不到
+「transport 換掉之後某個世代不通」這類問題 —— 而目前的部署正好依賴兩個世代並存
+（MCPO 走 handshake 世代）。
+
+第 3 層涵蓋的細節包含：
+
+- 2026-07-28 請求缺少 `params._meta` 信封 → 必須回 **400 + `-32602`**
+- `Mcp-Method` header 與 body 的 `method` 不一致 → 必須回 **400 + `-32020`**
+- `cache_hints` 是否真的出現在線上回應（SDK 在 dispatch 時套用，不是在 handler 回傳值裡）
+- 宣告的 `ttlMs` 必須 ≤ 1 小時（客戶端快取無法遠端失效，過長會讓白名單變更延遲生效）
+
+> 負向測試刻意斷言**確切**狀態碼與 error code，而不是 `>= 400`：
+> 用範圍斷言時，一個「端點根本不存在」的 404 也會讓測試通過。
+
 ## 🚀 執行測試
 
 ### 在 Docker 容器中執行
 
 ```bash
-# 執行所有單元測試
+# 執行全部測試（單元 + 整合，含協議層）
+docker exec mcp-db-http-dev pytest /app/tests -q
+
+# 只跑單元測試
 docker exec mcp-db-http-dev pytest /app/tests/unit/ -v
+
+# 只跑協議層測試（改動 transport 或 SDK 版本後必跑）
+docker exec mcp-db-http-dev pytest /app/tests/integration/test_mcp_protocol.py -v
 
 # 執行特定測試文件
 docker exec mcp-db-http-dev pytest /app/tests/unit/test_validators.py -v
 
 # 執行帶覆蓋率報告的測試
-docker exec mcp-db-http-dev pytest /app/tests/unit/ \
+docker exec mcp-db-http-dev pytest /app/tests \
   --cov=/app/src \
   --cov-report=term \
   --cov-report=html
@@ -108,17 +145,20 @@ docker exec mcp-db-http-dev pytest /app/tests/unit/ \
 # 報告位置：/app/htmlcov/index.html
 ```
 
+> ⚠️ 正式（production target）image 不包含 `tests/` 與 pytest，
+> 上述指令請對開發容器執行。
+
 ### 本地執行（需配置環境）
 
 ```bash
-# 安裝測試依賴
-pip install pytest pytest-asyncio pytest-cov
+# 安裝測試依賴（含 constraints 以對齊 image 內版本）
+pip install -c constraints.txt pytest pytest-asyncio pytest-cov
 
 # 執行測試
-pytest tests/unit/ -v
+pytest tests -q
 
 # 執行帶覆蓋率報告
-pytest tests/unit/ --cov=src --cov-report=html
+pytest tests --cov=src --cov-report=html
 ```
 
 ## 🔧 配置說明
@@ -154,19 +194,22 @@ dev = [
 - 異步查詢執行
 - 連接池管理
 - 敏感資訊保護
+- **MCP 協議層**（工具定義契約、handler 契約、兩世代 HTTP 相容性）
+- **REST API 端點**（`test_api_endpoints.py`）
 
 ### ⚠️ 部分覆蓋
 - Schema 快取系統
 - LFU+LRU 淘汰策略
 - 靜態 Schema 載入器
 - 資料庫配置管理
+- Tool Handlers（協議層測試會經過它們，但缺少各 handler 的專屬測試）
 
 ### ❌ 未覆蓋（未來改進）
-- HTTP API 層（需整合測試）
-- MCP 伺服器核心協議
-- SSE/Stdio 傳輸層
-- Schema 格式化器
-- Tool Handlers
+- stdio 進入點（`server.py`）—— 只有 HTTP 進入點有協議層測試；
+  兩者的 handler 邏輯是複製關係而非共用，因此 stdio 側改動不會被測試攔住
+- Schema 格式化器（`database/schema/formatter.py`）
+- 資料庫內省（`database/schema/introspector.py`）—— 需要真實資料庫
+- **端到端**：Open WebUI → LiteLLM → MCPO → 模組的完整路徑無自動化測試
 
 ## 🎯 測試最佳實踐
 
@@ -223,14 +266,14 @@ jobs:
           python-version: '3.11'
       - name: Install dependencies
         run: |
-          pip install -e .
-          pip install pytest pytest-asyncio pytest-cov
+          pip install -c constraints.txt -e .
+          pip install -c constraints.txt pytest pytest-asyncio pytest-cov
       - name: Run tests
         run: |
-          pytest tests/unit/ \
+          pytest tests \
             --cov=src \
             --cov-report=xml \
-            --cov-fail-under=25
+            --cov-fail-under=40
       - name: Upload coverage
         uses: codecov/codecov-action@v2
 ```
@@ -301,4 +344,4 @@ pytest tests/unit/ -v
 
 ---
 
-**MCP Multi-Database Connector 測試套件已建立完整的單元測試基礎，確保核心功能穩定可靠！**
+**最後更新**：2026-08-04（新增 MCP 協議層測試；移除已過時的內嵌測試數與覆蓋率）

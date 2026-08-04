@@ -13,14 +13,14 @@ graph TB
     end
 
     subgraph "Service Layer"
-        MCP[MCP Server<br/>stdio protocol]
-        HTTP[HTTP API Server<br/>FastAPI + OpenAPI]
+        MCP[server.py<br/>MCP over stdio]
+        HTTP[http_server.py<br/>MCP over Streamable HTTP<br/>+ REST API FastAPI/OpenAPI]
     end
 
     subgraph "Core Layer"
         CONFIG[Config Manager<br/>DatabaseConfig + AppConfig]
         DI[Dependency Injection<br/>Singleton Pattern]
-        ERROR[Error Handling<br/>Unified Format]
+        EXC[Exceptions<br/>MCPDBError hierarchy]
     end
 
     subgraph "Database Layer"
@@ -31,8 +31,8 @@ graph TB
     end
 
     subgraph "Tools Layer"
-        REGISTRY[Tool Registry<br/>get_all_tools]
-        HANDLERS[Tool Handlers<br/>handle_tool_call]
+        REGISTRY[ToolRegistry<br/>handle_tool]
+        HANDLERS[Tool Handlers<br/>Query/Schema/Cache/...]
     end
 
     subgraph "Data Layer"
@@ -45,15 +45,15 @@ graph TB
     WEB --> HTTP
     API --> HTTP
 
-    MCP --> HANDLERS
-    HTTP --> HANDLERS
+    MCP --> REGISTRY
+    HTTP --> REGISTRY
 
-    HANDLERS --> REGISTRY
+    REGISTRY --> HANDLERS
     HANDLERS --> DBM
 
     DBM --> CONFIG
     DBM --> DI
-    DBM --> ERROR
+    DBM --> EXC
 
     DBM --> SCHEMA_INTRO
     SCHEMA_INTRO --> SCHEMA_CACHE
@@ -69,14 +69,17 @@ graph TB
 ### 1. 分層架構 (Layered Architecture)
 - **核心層 (core/)**: 配置管理、依賴注入、異常處理
 - **數據庫層 (database/)**: 連接管理、Schema 快取與內省
-- **工具層 (tools/)**: MCP 工具註冊和處理
-- **MCP 層 (mcp/)**: 協議實現（STDIO/SSE 傳輸）
-- **API 層 (api/)**: REST API 路由和中間件
+- **工具層 (tools/)**: MCP 工具定義、註冊與處理
+- **協議進入點**: `server.py`（stdio）與 `http_server.py`（Streamable HTTP + REST）
+  各自直接持有一個 SDK `Server` 實例；沒有獨立的協議層套件
+- **API 層 (api/)**: 請求／回應模型與中間件（路由定義在 `http_server.py`）
 
-### 2. 雙模式支援
-- **MCP Protocol (stdio)**: 專為 Claude Desktop 設計
-- **HTTP API (OpenAPI)**: 支援 Open WebUI 和第三方應用整合
-- **統一工具層**: MCP 和 HTTP API 共用相同的工具邏輯
+### 2. 兩種進入點
+- **stdio（`server.py`）**: 供 Claude Desktop 一類的本機 MCP 客戶端使用
+- **HTTP（`http_server.py`）**: 同一個 FastAPI app 同時提供
+  - `/mcp` — MCP over **Streamable HTTP**
+  - `/api/v1/*` — REST API（OpenAPI/Swagger，供 Open WebUI 與第三方應用整合）
+- **統一工具層**: 兩個進入點都經 `ToolRegistry.handle_tool()`，共用同一份工具邏輯
 
 ### 3. 關注點分離 (Separation of Concerns)
 - 每個層次有明確的職責邊界
@@ -144,23 +147,17 @@ def get_database_manager() -> DatabaseManager
 
 ```python
 class MCPDBError(Exception)              # 基礎異常
-class DatabaseConnectionError(...)       # 連接錯誤
-class SchemaLoadError(...)               # Schema 載入錯誤
-class ToolExecutionError(...)            # 工具執行錯誤
+class ToolExecutionError(MCPDBError)     # 工具執行錯誤
+class SchemaLoadError(MCPDBError)        # Schema 載入錯誤
+class DatabaseConnectionError(MCPDBError)  # 連接錯誤
+class ConfigurationError(MCPDBError)     # 配置錯誤
+class QueryExecutionError(MCPDBError)    # 查詢執行錯誤
+class CacheError(MCPDBError)             # 快取錯誤
 ```
 
-#### 🛡️ error_handling.py
-**職責**: 統一錯誤處理
-
-```python
-def format_error_response(
-    error: Exception,
-    format_type: ErrorFormat = ErrorFormat.MCP_TOOL
-) -> dict
-
-def safe_execute(func: Callable, *args, **kwargs) -> dict
-def safe_execute_async(func: Callable, *args, **kwargs) -> dict
-```
+> `core/error_handling.py`（`format_error_response` / `safe_execute`）已於
+> 2026-08-04 移除 —— 它從未被任何進入點載入（死碼）。錯誤格式化實際發生在
+> `tools/base.py` 的 `_error_response()` 與各進入點的 except 區塊。
 
 ---
 
@@ -269,112 +266,185 @@ class StaticSchemaLoader:
 
 ### 3️⃣ 工具層 (tools/)
 
-#### 🎛️ registry.py
-**職責**: 工具註冊中心
+#### 📖 definitions.py
+**職責**: 工具定義（`Tool` 清單）與名稱前綴
 
 ```python
-def get_all_tools() -> List[Tool]
-    """返回所有可用的 MCP 工具"""
-
-def get_tool_by_name(name: str) -> Tool
-    """根據名稱獲取特定工具"""
+def get_tool_prefix() -> str      # 讀 TOOL_PREFIX 環境變數，預設 "db"
+def make_tool_name(suffix) -> str  # "query" -> "{prefix}_query"
+def get_all_tools() -> List[Tool]  # 全部工具定義
+DB_TOOLS: List[Tool]               # 同上，模組載入時求值
 ```
 
-**工具清單**（10+ 工具）：
-- `db_test_connection` - 測試資料庫連接
-- `db_query` - 執行 SQL 查詢
-- `db_schema` - 取得 Schema 資訊
-- `db_list_tables` - 列出所有表格
-- `db_dependencies` - 分析表格依賴關係
-- `db_cache_stats` - 快取統計
-- `db_export_schema` - 匯出 Schema
-- ... 等
+**工具清單**（11 支，實際名稱依 `TOOL_PREFIX` 而定）：
 
-#### 🔧 handlers.py
-**職責**: 統一的工具處理邏輯
+| suffix | 說明 |
+|--------|------|
+| `query` | 執行 SQL 查詢 |
+| `schema` | 取得 Schema 資訊 |
+| `schema_summary` | Schema 摘要 |
+| `schema_reload` | 重載 Schema |
+| `static_schema_info` | 靜態 Schema 配置資訊 |
+| `export_schema` | 匯出 Schema |
+| `dependencies` | 分析表格依賴關係 |
+| `test_connection` | 測試資料庫連接 |
+| `cache_stats` | 快取統計 |
+| `cache_invalidate` | 清除快取 |
+| `syntax_guide` | SQL 語法指引 |
+
+#### 🎛️ registry.py - ToolRegistry
+**職責**: 把工具呼叫路由到對應的 handler
 
 ```python
-async def handle_tool_call(
-    request: CallToolRequest,
-    db_manager: Optional[DatabaseManager] = None
-) -> dict:
-    """統一的工具處理入口（MCP 和 HTTP API 共用）"""
+class ToolRegistry:
+    def __init__(self)
+        """建立所有 handler 實例，並以 tool_name -> handler 建索引"""
+
+    async def handle_tool(self, request, db_manager) -> Dict[str, Any]
+        """統一的工具處理入口（兩個進入點共用）"""
 ```
+
+handler 清單（`tools/handlers/`）：`QueryHandler`、`ConnectionHandler`、
+`DependencyHandler`、`SchemaHandler`、`CacheHandler`、`ExportHandler`、`SyntaxHandler`。
+
+#### 🧱 base.py - ToolHandler
+**職責**: handler 抽象基底與統一回應格式
+
+```python
+class ToolHandler(ABC):
+    tool_names: List[str]                       # 本 handler 負責的工具名
+    async def handle(self, request, db_manager)  # 實作工具邏輯
+    def _success_response(self, text) -> dict
+    def _error_response(self, error_message) -> dict   # 帶 isError: True
+```
+
+> **協議／業務分界線就在這裡。** `handle_tool()` 收到的 `request` 只被讀取
+> `.name` 與 `.arguments` 兩個屬性，因此 handler 完全不依賴 SDK 型別 ——
+> SDK v2 的欄位改名（`inputSchema` → `input_schema`）不會滲進業務邏輯。
+>
+> 注意 `_error_response()` 產生的 `isError: True` **目前未被協議層取用**：
+> 並非每個 handler 都走這個方法回報失敗（有些自行組錯誤文字後當成功回傳），
+> 直接接上 `CallToolResult.is_error` 會讓失敗語意不一致。原因與後續處理見
+> 主專案 `docs/mcp-2026-07-28-migration/ISSUES.md`。
 
 ---
 
-### 4️⃣ MCP 協議層 (mcp/)
+### 4️⃣ 協議進入點
 
-#### 🎯 base_server.py - BaseMCPServer
-**職責**: 傳輸無關的 MCP 服務器基礎實現
+| 模式 | 指令 | 對外提供 | 用途 |
+|------|------|---------|------|
+| STDIO | `python -m server` | MCP over stdio | Claude Desktop / Claude Code |
+| HTTP | `python -m http_server` | `/mcp`（Streamable HTTP）+ `/api/v1/*`（REST）| Open WebUI / MCPO / 第三方 |
 
-```python
-class BaseMCPServer:
-    """傳輸無關的 MCP 協議實現"""
+**沒有獨立的協議層套件。** 原先的 `src/protocol/`（`base_server.py` /
+`stdio_server.py` / `sse_server.py`）與 `src/main.py` 已於 2026-08-04 移除 ——
+它們是死碼，兩個容器的 CMD 就是上表的指令，從未經過 `main.py`。
+協議處理現在直接寫在兩個進入點裡。
 
-    def __init__(db_manager: DatabaseManager, server_name: str)
+> 兩個進入點各自建立自己的 `Server` 實例與 handler。這是**複製關係而非共用** ——
+> 改動其中一邊的協議行為時必須手動同步另一邊（協議層測試只覆蓋 HTTP 側）。
 
-    def _setup_handlers(self):
-        """設置 MCP 協議處理器"""
-        @self.server.list_tools()
-        @self.server.call_tool()
-        @self.server.list_prompts()
-        @self.server.list_resources()
-```
-
-#### 🖥️ stdio_server.py - StdioMCPServer
-**職責**: STDIO 傳輸（Claude Desktop）
+#### 🖥️ server.py — stdio 進入點
 
 ```python
-class StdioMCPServer(BaseMCPServer):
-    """STDIO 傳輸的 MCP 服務器"""
+# SDK v2 移除了 decorator API，handler 改為建構參數
+server = Server(
+    server_name,
+    on_list_tools=on_list_tools,
+    on_call_tool=on_call_tool,
+    on_list_prompts=on_list_prompts,
+    on_list_resources=on_list_resources,
+)
 
-    async def run(self):
-        """使用 stdio_server() 上下文管理器"""
+async with server.lifespan(server) as lifespan_state:
+    async with stdio_server() as (read_stream, write_stream):
+        # 同時服務 initialize handshake 世代與無狀態的 2026-07-28 世代
+        await serve_dual_era_loop(
+            server, read_stream, write_stream, lifespan_state=lifespan_state
+        )
 ```
 
-#### 🌐 sse_server.py - SseMCPServer
-**職責**: HTTP/SSE 傳輸
+#### 🌐 http_server.py — MCPHTTPServer（Streamable HTTP + REST）
 
 ```python
-class SseMCPServer(BaseMCPServer):
-    """HTTP/SSE 傳輸的 MCP 服務器"""
+class MCPHTTPServer:
+    def __init__(self, config: Optional[DatabaseConfig] = None):
+        self.mcp_server = Server(..., cache_hints=cache_hints, on_list_tools=..., ...)
 
-    def create_asgi_app(allowed_origins: List[str] = None):
-        """創建帶有 CORS 支持的 ASGI 應用"""
+        # stateless=True 對應 2026-07-28 的無狀態模型，同時保留 handshake 世代
+        # json_response=True → 回應是 application/json，不是 text/event-stream
+        self.session_manager = StreamableHTTPSessionManager(
+            app=self.mcp_server, stateless=True, json_response=True
+        )
+
+        self.app = FastAPI(..., lifespan=lifespan)   # lifespan 內 run session manager
+        self.app.mount("/mcp", mcp_asgi_app)          # MCP 端點
+        setup_middleware(self.app, app_config)
+        self._register_routes()                        # REST 端點
 ```
 
-**CORS 支持**（v4.2 改進）：
-- 處理 OPTIONS 預檢請求
-- 注入 CORS headers
-- 解決子應用掛載問題
+**Transport**：**Streamable HTTP**，端點 `/mcp`。已取代舊的 SSE 傳輸，
+`/sse/` 不再存在（會回 404）。
+
+**兩個協議世代並存**：同一個 `/mcp` 端點同時服務
+
+| 世代 | 特徵 | 目前誰在用 |
+|------|------|-----------|
+| handshake 世代（≤ 2025-11-25） | 先 `initialize` 再送請求 | MCPO |
+| 2026-07-28 世代 | 無 handshake，self-contained POST；必須帶 `Mcp-Method`（呼叫工具時另帶 `Mcp-Name`）與 `params._meta` 信封 | 尚無生產客戶端 |
+
+世代判別由 SDK 的 `StreamableHTTPSessionManager` 處理，模組不自行協商版本。
+
+**SEP-2549 快取提示**：`Server(cache_hints=...)` 對 `tools/list`、`prompts/list`、
+`resources/list` 宣告 `ttlMs` / `cacheScope`。TTL 由 `MCP_LIST_CACHE_TTL_SECONDS`
+控制（預設 300 秒），**刻意不與 `SCHEMA_CACHE_TTL_MINUTES` 綁定** —— 後者是伺服器端
+快取、可隨時清除；前者是客戶端快取、無法遠端失效，所以它的值等於最壞情況的過期視窗。
+`scope` 為 `private`，因為工具描述內嵌了各部署自己的表格白名單。
 
 ---
 
 ### 5️⃣ API 層 (api/)
 
-#### 📦 models.py
-**職責**: REST API 共用 Pydantic 模型（QueryRequest、CacheInvalidateRequest、HealthResponse）
+#### 🛣️ REST 端點（定義於 `http_server.py` 的 `_register_routes()`）
 
-> REST 路由本體定義在 `http_server.py`（唯一的 HTTP 實作）；
-> 舊的 `api/routes.py` + `main.py` 平行實作已於樣板整理時移除。
+```python
+GET  /api/v1/health                    # 健康檢查
+GET  /api/v1/tools                     # 工具列表
+GET  /api/v1/connection/test           # 測試資料庫連線
+POST /api/v1/query                     # 執行查詢
+GET  /api/v1/schema                    # Schema 資訊
+GET  /api/v1/schema/{table_name}       # 單一表格 Schema
+GET  /api/v1/dependencies/{table_name} # 表格依賴關係
+GET  /api/v1/summary                   # Schema 摘要
+GET  /api/v1/database/info             # 資料庫資訊
+GET  /api/v1/cache/stats               # 快取統計
+GET  /api/v1/admin/cache-debug         # 快取除錯
+POST /api/v1/cache/invalidate          # 清除快取
+POST /api/v1/schema/reload             # 重載 Schema
+GET  /api/v1/schema/static/info        # 靜態 Schema 配置資訊
+```
+
+> 原先的 `api/routes.py`（`APIRouter`）已移除；路由改為在 `MCPHTTPServer`
+> 內註冊，因為它們需要存取實例上的 `db_manager` 與 `tool_registry`。
+>
+> **錯誤語意**：REST 層的業務錯誤一律回 **HTTP 200**，錯誤訊息放在
+> body 的 `{"success": false, "error": ...}`。僅參數格式錯誤等會回 4xx。
+
+#### 📦 models.py
+**職責**: 請求／回應模型（Pydantic）— `QueryRequest`、`CacheInvalidateRequest`、`HealthResponse`
 
 #### 🎨 middleware.py
 **職責**: 中間件配置
 
 ```python
-def setup_middleware(app: FastAPI, config: AppConfig):
-    """配置 CORS、日誌、限流等中間件"""
+def setup_middleware(app: FastAPI, app_config: AppConfig):
+    """CORS、GZip、限流"""
 ```
 
----
-
-## 🔄 入口點
-
-| 模式 | 指令 | 用途 |
-|------|------|------|
-| STDIO | `python -m server` | MCP 客戶端（Claude Desktop / Claude Code） |
-| HTTP | `python -m http_server` | REST API + SSE MCP（Open WebUI / MCPO） |
+CORS 的 `allow_headers` 必須放行 MCP 2026-07-28（SEP-2243）要求的
+`Mcp-Method`、`Mcp-Name`、`MCP-Protocol-Version`、`Mcp-Session-Id` ——
+否則瀏覽器端 MCP 客戶端的 preflight 會被擋（實測回 400）。
+經 MCPO 進來的是 server-to-server 請求，不受此影響。
 
 ---
 
@@ -461,21 +531,29 @@ sequenceDiagram
 
 ```mermaid
 sequenceDiagram
-    participant Claude
-    participant MCPServer
-    participant ToolHandler
-    participant DatabaseManager
+    participant Client as MCP Client
+    participant Entry as server.py / http_server.py
+    participant Registry as ToolRegistry
+    participant Handler as ToolHandler
+    participant DBM as DatabaseManager
     participant Database
 
-    Claude->>MCPServer: call_tool(name, arguments)
-    MCPServer->>ToolHandler: handle_tool_call()
-    ToolHandler->>DatabaseManager: 執行對應操作
-    DatabaseManager->>Database: 查詢/執行
-    Database-->>DatabaseManager: 返回結果
-    DatabaseManager-->>ToolHandler: 格式化結果
-    ToolHandler-->>MCPServer: 返回 MCP 格式響應
-    MCPServer-->>Claude: 返回結果
+    Client->>Entry: tools/call (name, arguments)
+    Note over Entry: on_call_tool(ctx, params)<br/>包成 duck-typed request
+    Entry->>Registry: handle_tool(request, db_manager)
+    Registry->>Handler: handle(request, db_manager)
+    Handler->>DBM: 執行對應操作
+    DBM->>Database: 查詢/執行
+    Database-->>DBM: 返回結果
+    DBM-->>Handler: 格式化結果
+    Handler-->>Registry: {"content": [{"type": "text", ...}]}
+    Registry-->>Entry: 同上（純 dict，不含 SDK 型別）
+    Note over Entry: _to_content_blocks()<br/>轉成 types.CallToolResult
+    Entry-->>Client: CallToolResult
 ```
+
+> SDK v2 不再自動包裝 handler 的回傳值，因此 `_to_content_blocks()` 這道轉換
+> 是必要的；把它留在進入點是刻意的設計，讓 `ToolRegistry` 之下完全不碰 SDK 型別。
 
 ---
 
@@ -533,22 +611,36 @@ class NewDatabaseConnector(DatabaseConnector):
 ```
 
 ### 2. 新 MCP 傳輸層支援
+
+傳輸層由 SDK 提供，模組不自行實作。新增一種傳輸＝把同一個 `Server` 實例
+交給 SDK 對應的 transport，handler 完全不用改：
+
 ```python
-# 添加新的傳輸實現
-class WebSocketMCPServer(BaseMCPServer):
-    async def run(self):
-        # WebSocket 傳輸邏輯
+# 既有：stdio（server.py）
+async with stdio_server() as (r, w):
+    await serve_dual_era_loop(server, r, w, lifespan_state=state)
+
+# 既有：Streamable HTTP（http_server.py）
+StreamableHTTPSessionManager(app=server, stateless=True, json_response=True)
 ```
 
 ### 3. 新工具支援
 ```python
-# 在 tools/registry.py 中註冊新工具
+# 1) 在 tools/definitions.py 加入 Tool 定義
 new_tool = Tool(
-    name="db_new_feature",
+    name=make_tool_name("new_feature"),   # 自動套用 TOOL_PREFIX
     description="...",
-    inputSchema={...}
+    inputSchema={"$schema": "https://json-schema.org/draft/2020-12/schema", ...},
 )
+
+# 2) 在 tools/handlers/ 實作 ToolHandler 子類別，並加進
+#    tools/registry.py 的 handler_classes 清單
 ```
+
+> **`inputSchema` vs `input_schema`**：SDK v2 的 Python 屬性名是 `input_schema`，
+> 但 `Tool.model_config` 設了 `populate_by_name=True`，所以建構時寫
+> `inputSchema=` 仍然可用，且**傳輸線上的欄位名一直是 camelCase 的
+> `inputSchema`**。JSON Schema 依 SEP-2106 應宣告 2020-12 版本。
 
 ---
 
@@ -597,22 +689,26 @@ cache.get_preload_status()
 ## 架構設計總結
 
 ### 關鍵改進
-1. ✅ **分層架構重構** - 清晰的職責劃分（core/database/tools/mcp/api）
+1. ✅ **分層架構** - 清晰的職責劃分（core / database / tools / api + 兩個進入點）
 2. ✅ **Strict Mode 改進** - cache_source 來源追蹤
 3. ✅ **預載邏輯同步** - 預載狀態透明化
 4. ✅ **白名單驗證** - 靜態 Schema 驗證是否存在於資料庫
-5. ✅ **CORS 支持** - SSE 子應用 CORS 完整實現
-6. ✅ **統一錯誤處理** - REST API 和 MCP 工具格式統一
+5. ✅ **Streamable HTTP + 兩世代並存** - 同一 `/mcp` 端點服務 handshake 世代與 2026-07-28
+6. ✅ **CORS 放行 MCP headers** - `Mcp-Method` / `Mcp-Name` / `MCP-Protocol-Version`
 7. ✅ **依賴注入** - 單例模式的配置和管理器
 8. ✅ **優雅關閉** - 自動清理資源
+9. ✅ **收斂死碼** - 移除 `protocol/`、`main.py`、`api/routes.py`、`core/error_handling.py`，
+   每個模組從 3 套平行的 MCP handler 收斂為 1 套
 
 ---
 
 > **相關文件**：
-> - [v4.2 架構重構詳解](development/v4.2-architecture-refactoring.md) — 完整重構文件
+> - [v4.2 架構重構詳解](development/v4.2-architecture-refactoring.md)
+>   — **歷史文件**，描述 2026-01 當時的分層（含已移除的 `protocol/`）
 > - [Schema 系統](schema-system.md) — schemas_config 配置系統
 > - [效能優化](performance.md) — 快取與 Token 優化策略
 > - [測試指南](testing.md) — 單元測試與覆蓋率報告
+> - 主專案 `docs/mcp-2026-07-28-migration/` — 本次協議遷移的完整紀錄、決議與已知未修項
 
-**最後更新**：2026-01-27
-**版本**：v1.0.0
+**最後更新**：2026-08-04（MCP 2026-07-28 協議遷移：Streamable HTTP、SDK v2、死碼收斂）
+**版本**：v1.1.0
