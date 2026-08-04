@@ -30,7 +30,7 @@ class TestHealthEndpoint:
 
             server = MCPHTTPServer()
             server.db_manager = mock_db_manager
-            server._setup_routes()
+            server._register_routes()
 
             return TestClient(server.app)
 
@@ -80,7 +80,7 @@ class TestConnectionEndpoint:
 
             server = MCPHTTPServer()
             server.db_manager = mock_db_manager
-            server._setup_routes()
+            server._register_routes()
 
             return TestClient(server.app)
 
@@ -132,7 +132,7 @@ class TestQueryEndpoint:
 
                 server = MCPHTTPServer()
                 server.db_manager = mock_db_manager
-                server._setup_routes()
+                server._register_routes()
 
                 return TestClient(server.app)
 
@@ -234,7 +234,7 @@ class TestSchemaEndpoints:
 
             server = MCPHTTPServer()
             server.db_manager = mock_db_manager
-            server._setup_routes()
+            server._register_routes()
 
             return TestClient(server.app)
 
@@ -310,7 +310,7 @@ class TestCacheEndpoints:
 
             server = MCPHTTPServer()
             server.db_manager = mock_db_manager
-            server._setup_routes()
+            server._register_routes()
 
             return TestClient(server.app)
 
@@ -324,7 +324,7 @@ class TestCacheEndpoints:
 
     def test_get_cache_debug_info(self, test_client):
         """✅ 獲取快取調試資訊"""
-        response = test_client.get("/api/v1/cache/debug")
+        response = test_client.get("/api/v1/admin/cache-debug")
 
         assert response.status_code == 200
         data = response.json()
@@ -378,7 +378,7 @@ class TestToolsEndpoint:
 
             server = MCPHTTPServer()
             server.db_manager = mock_db_manager
-            server._setup_routes()
+            server._register_routes()
 
             return TestClient(server.app)
 
@@ -406,7 +406,7 @@ class TestRateLimiting:
 
             server = MCPHTTPServer()
             server.db_manager = mock_db_manager
-            server._setup_routes()
+            server._register_routes()
 
             return TestClient(server.app)
 
@@ -443,7 +443,7 @@ class TestErrorHandling:
 
             server = MCPHTTPServer()
             server.db_manager = mock_db_manager
-            server._setup_routes()
+            server._register_routes()
 
             return TestClient(server.app)
 
@@ -470,7 +470,7 @@ class TestErrorHandling:
 
             server = MCPHTTPServer()
             server.db_manager = mock_db_manager
-            server._setup_routes()
+            server._register_routes()
 
             client = TestClient(server.app)
 
@@ -498,15 +498,24 @@ class TestCORSHeaders:
 
             server = MCPHTTPServer()
             server.db_manager = mock_db_manager
-            server._setup_routes()
+            server._register_routes()
 
             return TestClient(server.app)
 
     def test_cors_headers_present(self, test_client):
-        """✅ CORS 標頭存在"""
-        response = test_client.options("/api/v1/health")
+        """✅ CORS preflight 成功
 
-        # CORS OPTIONS 請求應該成功
+        CORSMiddleware 只在請求帶 Origin + Access-Control-Request-Method 時才攔截 OPTIONS；
+        裸 OPTIONS 沒有對應路由，回 405 是正確的 HTTP 行為，不是 CORS 壞掉。
+        """
+        response = test_client.options(
+            "/api/v1/health",
+            headers={
+                "Origin": "http://localhost:3000",
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+
         assert response.status_code in [200, 204]
 
     def test_cors_allows_origin(self, test_client):
@@ -540,7 +549,7 @@ class TestResponseFormat:
 
             server = MCPHTTPServer()
             server.db_manager = mock_db_manager
-            server._setup_routes()
+            server._register_routes()
 
             return TestClient(server.app)
 
