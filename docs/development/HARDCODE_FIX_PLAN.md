@@ -3,6 +3,27 @@
 > **建立日期**：2025-12-30
 > **專案**：MCP Database
 > **目的**：系統性修復所有硬編碼問題，提升程式碼可維護性和可配置性
+> **狀態**：15/15 項目已於 2025-12-31 全部完成
+
+> ## ⚠️ 歷史文件（保留原文不改寫）
+>
+> 本文是已完成的修復計劃紀錄，**不是現況說明**。文中多處引用
+> `src/protocol/sse_server.py` —— 該檔案已於 2026-08-04 的 MCP 2026-07-28
+> 協議遷移中隨整個 `src/protocol/` 一併移除（死碼），SSE 傳輸也已改為
+> **Streamable HTTP**（端點 `/mcp`）。
+>
+> 因此本文的「同步更新 SSE 伺服器」一類步驟已無對應檔案。
+>
+> ⚠️ **`CORS_PREFLIGHT_MAX_AGE` 目前是死設定**：它被 `core/config.py` 讀進
+> `HTTPConfig.cors_preflight_max_age`，但**沒有任何地方使用它** ——
+> 唯一的使用點在已移除的 `sse_server.py`。而 `sse_server.py` 本來就是死碼
+> （兩個容器的 CMD 都不經過它），所以這個設定在 live 路徑上**從未生效過**，
+> 並非 2026-08-04 遷移造成的退化。`src/api/middleware.py` 的
+> `CORSMiddleware` 未傳 `max_age`，實際採用 Starlette 預設值 600 秒
+> —— 恰好與本設定的預設值相同，這也是它一直沒被發現的原因。
+>
+> 現況請看 [`docs/architecture.md`](../architecture.md)；
+> 遷移紀錄在主專案 `docs/mcp-2026-07-28-migration/`。
 
 ---
 
