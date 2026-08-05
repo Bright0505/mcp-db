@@ -93,3 +93,60 @@ class TestDatabaseConfigWithPrefix:
         cfg = config.DatabaseConfig.from_env()
         assert cfg.db_type == "postgresql"
         assert cfg.server == "shared-pg-host"
+
+
+class TestNoBypassOfEnvPrefix:
+    """DB_* 一律經 env()，不得直接 os.getenv。
+
+    為什麼需要這一層
+    ----------------
+    `DatabaseConfig` 走 `env()` 是對的，但曾有 8 處程式碼直接
+    `os.environ.get('DB_TYPE')`，繞過 ENV_PREFIX 讀到共用值。後果不是
+    顯示瑕疵：`*_schema` 的輸出帶有 SQL 方言提示（PostgreSQL 的
+    `LIMIT N` / `CURRENT_DATE` vs T-SQL 的 `TOP N` / `GETDATE()`），
+    模型會照著寫查詢。設了 ENV_PREFIX 的模組因此被指示錯誤的方言。
+
+    上面的測試都在 `core.config` 這一層，抓不到「別的檔案繞過它」，
+    所以這裡改用靜態掃描守備。
+    """
+
+    def test_no_module_reads_db_vars_via_os_getenv(self):
+        import re
+        from pathlib import Path
+
+        # 由已載入的 core.config 反推 src/，不用相對 __file__ 推算 ——
+        # 容器內的 tests/ 比 repo 多一層嵌套（/app/tests/tests/...），
+        # 相對路徑會指錯地方。
+        import core.config as config
+        src = Path(config.__file__).resolve().parents[1]
+        assert (src / "core" / "config.py").is_file(), f"src 目錄推算錯誤：{src}"
+
+        # core/config.py 是 env() 的定義處，本來就必須用 os.getenv
+        pattern = re.compile(r"os\.(?:environ\.get|getenv)\(\s*['\"]DB_")
+        offenders = []
+        for path in sorted(src.rglob("*.py")):
+            if path.relative_to(src).as_posix() == "core/config.py":
+                continue
+            for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                if pattern.search(line):
+                    offenders.append(f"{path.relative_to(src)}:{i}: {line.strip()}")
+
+        assert not offenders, (
+            "DB_* 必須經 core.config.env() 讀取，否則設了 ENV_PREFIX 的模組會拿到"
+            "共用部署值（並對模型自報錯誤的 SQL 方言）。違規處：\n  "
+            + "\n  ".join(offenders)
+        )
+
+    def test_schema_summary_reports_namespaced_db_type(self, monkeypatch):
+        """快取層產生的 database_type 必須是命名空間的值，不是共用值。"""
+        import importlib
+        import core.config as config
+        importlib.reload(config)
+
+        monkeypatch.setenv("DB_TYPE", "postgresql")          # 共用
+        monkeypatch.setenv("ENV_PREFIX", "MYMODULE_")
+        monkeypatch.setenv("MYMODULE_DB_TYPE", "mssql")      # 本模組
+
+        import database.schema.cache as cache_mod
+        importlib.reload(cache_mod)
+        assert cache_mod.env("DB_TYPE", "mssql").lower() == "mssql"

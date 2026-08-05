@@ -48,8 +48,9 @@ class AsyncDatabaseManager:
 
         # Initialize connection pool
         if pool_size is None:
-            import os
-            pool_size = int(os.getenv("DB_POOL_SIZE", "10"))
+            # env(), not os.getenv: DB_* belongs to this module's ENV_PREFIX namespace.
+            from core.config import env
+            pool_size = int(env("DB_POOL_SIZE", "10"))
 
         await self.db_connector.initialize_pool(pool_size)
         self._initialized = True

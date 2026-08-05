@@ -4,11 +4,14 @@
 """
 
 import json
-import os
 import re
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 import logging
+
+# DB_* must be read through env(), not os.getenv: a module with ENV_PREFIX set
+# has its own namespace and would otherwise pick up the shared deployment value.
+from core.config import env
 
 logger = logging.getLogger(__name__)
 
@@ -238,9 +241,9 @@ class SchemaConfigManager:
 
             if table_name_lower not in processed_tables:
                 # Determine default schema based on database type
-                db_type = os.environ.get('DB_TYPE', 'mssql').lower()
+                db_type = env('DB_TYPE', 'mssql').lower()
                 default_schema = 'public' if db_type == 'postgresql' else 'dbo'
-                db_schema = os.environ.get('DB_SCHEMA', default_schema)
+                db_schema = env('DB_SCHEMA', default_schema) or default_schema
 
                 table_info = {
                     'TABLE_NAME': table_name_lower,  # 使用小寫（PostgreSQL 慣例）

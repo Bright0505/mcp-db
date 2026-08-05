@@ -1,10 +1,14 @@
 """Schema information handlers."""
 
 import logging
-import os
 from typing import Any, Dict, List
 from mcp.types import CallToolRequest
 
+# DB_* must be read through env(), not os.getenv: a module with ENV_PREFIX set
+# has its own namespace and would otherwise pick up the shared deployment value.
+# Reporting the wrong DB_TYPE here is not cosmetic -- the schema output carries a
+# SQL dialect hint that the model follows when writing queries.
+from core.config import env
 from tools.base import ToolHandler
 from tools.definitions import make_tool_name, TOOL_SCHEMA, TOOL_SCHEMA_SUMMARY
 from tools.validators import InputValidator
@@ -69,7 +73,7 @@ class SchemaHandler(ToolHandler):
 
     def _format_table_schema(self, result: Dict[str, Any], table_name: str) -> Dict[str, Any]:
         """Format detailed table schema."""
-        db_type = result.get('database_type') or os.environ.get('DB_TYPE', 'mssql').lower()
+        db_type = result.get('database_type') or env('DB_TYPE', 'mssql').lower()
         db_type_display = 'SQL Server (T-SQL)' if db_type == 'mssql' else 'PostgreSQL'
 
         output = f"✅ Schema for table '{table_name}':\n"
@@ -213,13 +217,13 @@ class SchemaHandler(ToolHandler):
             output += "   2. Insufficient permissions to query INFORMATION_SCHEMA\n"
             output += "   3. Cache not properly initialized\n"
             output += "   4. Connected to wrong database/schema\n\n"
-            db_type_env = os.environ.get('DB_TYPE', 'unknown').lower()
+            db_type_env = env('DB_TYPE', 'unknown').lower()
             output += f"🗄️  Database Type: {result.get('database_type') or db_type_env}\n"
             output += f"💾 Cache Source: {result.get('cache_source', 'unknown')}\n"
             output += f"📡 Source: {result.get('source', 'unknown')}\n"
             return self._success_response(output)
 
-        db_type = result.get('database_type') or os.environ.get('DB_TYPE', 'mssql').lower()
+        db_type = result.get('database_type') or env('DB_TYPE', 'mssql').lower()
         db_type_display = {
             'mssql': 'SQL Server (T-SQL)',
             'postgresql': 'PostgreSQL'
@@ -300,7 +304,7 @@ class SchemaHandler(ToolHandler):
             error_msg = result.get('message') or result.get('error', 'Unknown error')
             return self._error_response(f"Database info query failed: {error_msg}")
 
-        db_type = result.get('database_type') or os.environ.get('DB_TYPE', 'mssql').lower()
+        db_type = result.get('database_type') or env('DB_TYPE', 'mssql').lower()
         db_type_display = {
             'mssql': 'SQL Server (T-SQL)',
             'postgresql': 'PostgreSQL'
