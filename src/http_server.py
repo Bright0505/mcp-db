@@ -189,7 +189,15 @@ class MCPHTTPServer:
             # is worse for a model than either choice consistently.
             # Enabling this needs all handlers to report failure the same way first;
             # tracked as a follow-up rather than shipped half-done.
-            return types.CallToolResult(content=self._to_content_blocks(result["content"]))
+            #
+            # SEP-2106: structuredContent is forwarded when the handler supplies it.
+            # Because is_error stays false above, the SDK client validates this payload
+            # against the tool's declared outputSchema on every call -- a handler that
+            # declares a schema but omits the payload fails at the client, not here.
+            return types.CallToolResult(
+                content=self._to_content_blocks(result["content"]),
+                structured_content=result.get("structuredContent"),
+            )
         return types.CallToolResult(content=self._to_content_blocks(result))
 
     async def _on_list_prompts(self, ctx, params) -> types.ListPromptsResult:

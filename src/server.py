@@ -96,9 +96,14 @@ async def main():
         })()
         result = await handle_call_tool(request)
         content = result.get("content", []) if isinstance(result, dict) else result
+        structured = result.get("structuredContent") if isinstance(result, dict) else None
         # See http_server.py _on_call_tool: the tool layer's `isError` flag is not
-        # propagated yet because handlers report failure inconsistently.
-        return types.CallToolResult(content=_to_content_blocks(content))
+        # propagated yet because handlers report failure inconsistently; structured
+        # content (SEP-2106) is forwarded when the handler supplies it.
+        return types.CallToolResult(
+            content=_to_content_blocks(content),
+            structured_content=structured,
+        )
 
     async def on_list_prompts(ctx, params) -> types.ListPromptsResult:
         return types.ListPromptsResult(prompts=[])
