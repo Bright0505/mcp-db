@@ -48,6 +48,7 @@ from mcp_types.version import HANDSHAKE_PROTOCOL_VERSIONS
 
 from tools import get_all_tools
 from tools.definitions import (
+    JSON_SCHEMA_DIALECT,
     TOOL_CACHE_STATS,
     TOOL_QUERY,
     TOOL_SCHEMA,
@@ -79,6 +80,18 @@ def _schema(tool):
     模組是分批遷移到 v2 的，因此同一份測試檔必須在兩個版本下都能跑。
     """
     return getattr(tool, "input_schema", None) or tool.inputSchema
+
+
+def _output_schema(tool):
+    """取出 tool 的 output schema（SEP-2106），同時支援 SDK v1 與 v2。
+
+    v1 沒有這個欄位，`getattr` 因此回 None —— 對尚未遷移的模組等於「未宣告」，
+    與實際情形一致。
+    """
+    schema = getattr(tool, "output_schema", None)
+    if schema is None:
+        schema = getattr(tool, "outputSchema", None)
+    return schema
 
 
 def _fake_request(name, arguments=None):
@@ -202,6 +215,251 @@ class TestInputSchema:
         assert props["params"]["type"] == "array"
         assert props["params"]["items"]["type"] == "string"
         assert _schema(tool)["required"] == ["query"]
+
+    def test_every_input_schema_declares_the_2020_12_dialect(self):
+        """SEP-2106：schema 要被當成 2020-12 解讀，就必須自己宣告方言。
+
+        沒有 `$schema` 時，客戶端的 `jsonschema.validators.validator_for()` 會退回它自己的
+        預設 draft，而那個預設不保證是 2020-12 —— 也就是驗證用的規則可能不是我們寫的那套。
+        """
+        for tool in get_all_tools():
+            assert _schema(tool).get("$schema") == JSON_SCHEMA_DIALECT, tool.name
+
+
+class TestOutputSchema:
+    """SEP-2106 structured output —— 宣告 `outputSchema` 是**契約**而非提示。
+
+    為什麼這件事需要守備
+    --------------------
+    SDK 客戶端在 `ClientSession.call_tool` 內自動驗證（`mcp/client/session.py`）：
+    只要結果的 `is_error` 為 false，缺少或不符 `structuredContent` 就在客戶端端拋
+    `RuntimeError`。而本專案刻意不把工具層的 `isError` 傳到 `CallToolResult.is_error`
+    （見 `ToolHandler._error_response`），因此**連失敗路徑也會被驗證**。
+
+    結論：宣告了 `outputSchema` 的工具，它的每一條 return 路徑都必須帶合規 payload。
+    這一點無法靠讀程式碼保證，只能逐條路徑測 —— 見 `TestStructuredContent`。
+    """
+
+    def test_only_expected_tools_declare_an_output_schema(self):
+        """宣告集合必須與 `TestStructuredContent` 實際逐路徑驗證的集合一致。
+
+        這個測試存在的目的是**強迫覆蓋**：任何人給第二支工具加上 `outputSchema`，
+        這裡會轉紅，提醒他同時補上該工具所有 return 路徑的驗證，
+        而不是讓一條沒帶 payload 的分支在生產環境上才被客戶端拋錯。
+        """
+        declared = {t.name for t in get_all_tools() if _output_schema(t) is not None}
+        assert declared == {make_tool_name(TOOL_QUERY)}, (
+            f"宣告 outputSchema 的工具集合改變了：{sorted(declared)}。"
+            "請同步更新 TestStructuredContent，逐一驗證新工具的每條 return 路徑。"
+        )
+
+    def test_output_schema_is_a_valid_2020_12_schema(self):
+        """schema 本身要能被編譯 —— 寫壞的 schema 會讓每一次呼叫都在客戶端爆掉。"""
+        from jsonschema.validators import validator_for
+
+        for tool in get_all_tools():
+            schema = _output_schema(tool)
+            if schema is None:
+                continue
+            assert schema.get("$schema") == JSON_SCHEMA_DIALECT, tool.name
+            validator_cls = validator_for(schema)
+            validator_cls.check_schema(schema)
+
+    def test_output_schema_is_a_closed_object(self):
+        """`additionalProperties: false` 讓 handler 打錯欄位名變成測試失敗而非靜默掉欄位。"""
+        for tool in get_all_tools():
+            schema = _output_schema(tool)
+            if schema is None:
+                continue
+            assert schema["type"] == "object", tool.name
+            assert schema.get("additionalProperties") is False, tool.name
+            for field in schema.get("required", []):
+                assert field in schema["properties"], f"{tool.name}: required 的 {field} 不在 properties"
+
+    def test_query_output_schema_can_express_silent_truncation(self):
+        """具體斷言 query 的 outputSchema 保留了「這不是全部」的表達能力。
+
+        這是本次加上結構化輸出的主要理由：文字分支有列數上限，只讀文字的呼叫端
+        無法區分「這就是全部答案」與「這是較大結果集的前 N 列」。
+        """
+        schema = _output_schema(
+            next(t for t in get_all_tools() if t.name == make_tool_name(TOOL_QUERY))
+        )
+        props = schema["properties"]
+        assert props["row_count"]["type"] == "integer"
+        assert props["returned_row_count"]["type"] == "integer"
+        assert props["truncated"]["type"] == "boolean"
+        assert props["success"]["type"] == "boolean"
+        # 允許 null 才能表達「成功時沒有錯誤」，而 required 讓每條路徑都必須明確表態
+        assert props["error"]["type"] == ["string", "null"]
+        for field in ("success", "row_count", "returned_row_count", "truncated", "error"):
+            assert field in schema["required"], field
+
+
+class TestStructuredContent:
+    """逐一驗證 `*_query` 的**每一條** return 路徑都回傳合規的 structuredContent。
+
+    為什麼要逐條而不是抽樣：`isError` 未被傳遞到協議層，所以失敗路徑同樣會被客戶端
+    驗證。漏掉任何一條，該情境下的每一次呼叫都會在客戶端拋 RuntimeError
+    —— 而失敗路徑恰好是平時最少被走到、最晚才被發現的那些。
+    """
+
+    @staticmethod
+    def _validate(payload):
+        """以工具實際公告的 schema 驗證 payload，並回傳它。
+
+        刻意用 `get_all_tools()` 公告的那份，而不是直接 import `QUERY_OUTPUT_SCHEMA`：
+        真正約束客戶端的是公告出去的那份，兩者若有落差必須被抓到。
+        """
+        from jsonschema.validators import validator_for
+
+        schema = _output_schema(
+            next(t for t in get_all_tools() if t.name == make_tool_name(TOOL_QUERY))
+        )
+        validator_for(schema)(schema).validate(payload)
+        return payload
+
+    @staticmethod
+    def _db(result):
+        db = MagicMock()
+        db.execute_query_async = AsyncMock(return_value=result)
+        return db
+
+    async def _call(self, arguments, db_result=None):
+        from tools.handlers.query_handler import QueryHandler
+
+        handler = QueryHandler()
+        db = self._db(db_result) if db_result is not None else MagicMock()
+        response = await handler.handle(_fake_request(make_tool_name(TOOL_QUERY), arguments), db)
+        assert "structuredContent" in response, (
+            "宣告了 outputSchema 卻沒有回傳 structuredContent —— "
+            "這條路徑的每一次呼叫都會在客戶端拋 RuntimeError"
+        )
+        return response
+
+    async def test_success_with_rows(self):
+        response = await self._call(
+            {"query": "SELECT 1"},
+            {
+                "success": True,
+                "row_count": 2,
+                "columns": ["store_no", "revenue"],
+                "results": [
+                    {"store_no": "G001", "revenue": 100},
+                    {"store_no": "G002", "revenue": 200},
+                ],
+            },
+        )
+        payload = self._validate(response["structuredContent"])
+        assert payload["success"] is True
+        assert payload["row_count"] == 2
+        assert payload["returned_row_count"] == 2
+        assert payload["truncated"] is False
+        assert payload["columns"] == ["store_no", "revenue"]
+        assert payload["rows"][0]["store_no"] == "G001"
+        assert payload["error"] is None
+
+    async def test_success_with_zero_rows_is_not_an_error(self):
+        """「查得到但沒有資料」與「查詢失敗」必須可區分。
+
+        兩者在文字輸出裡都長得像「沒有資料」，而把後者當成前者解讀，
+        會讓呼叫端把一次失敗當成一個結論。
+        """
+        response = await self._call(
+            {"query": "SELECT 1 WHERE FALSE"},
+            {"success": True, "row_count": 0, "columns": ["x"], "results": []},
+        )
+        payload = self._validate(response["structuredContent"])
+        assert payload["success"] is True
+        assert payload["row_count"] == 0
+        assert payload["truncated"] is False
+        assert payload["error"] is None
+
+    async def test_truncation_is_reported(self):
+        """列數上限必須在 payload 裡是可偵測的，不能只出現在文字裡。
+
+        對應的實際事故形態：呼叫端拿被截斷的列自己加總，得到偏低的合計卻毫無警覺。
+        """
+        from tools.handlers.query_handler import DISPLAY_LIMIT
+
+        total = DISPLAY_LIMIT + 54
+        response = await self._call(
+            {"query": "SELECT 1"},
+            {
+                "success": True,
+                "row_count": total,
+                "columns": ["n"],
+                "results": [{"n": i} for i in range(total)],
+            },
+        )
+        payload = self._validate(response["structuredContent"])
+        assert payload["row_count"] == total
+        assert payload["returned_row_count"] == DISPLAY_LIMIT
+        assert payload["truncated"] is True
+        assert len(payload["rows"]) == DISPLAY_LIMIT
+
+    async def test_database_values_are_coerced_to_json_types(self):
+        """Decimal / date / datetime 不是 JSON 型別，未轉換會讓序列化失敗或退化成字串。"""
+        from datetime import date, datetime
+        from decimal import Decimal
+
+        response = await self._call(
+            {"query": "SELECT 1"},
+            {
+                "success": True,
+                "row_count": 1,
+                "columns": ["amount", "tr_date", "created_at", "missing"],
+                "results": [{
+                    "amount": Decimal("1234.56"),
+                    "tr_date": date(2026, 7, 28),
+                    "created_at": datetime(2026, 7, 28, 9, 30, 0),
+                    "missing": None,
+                }],
+            },
+        )
+        payload = self._validate(response["structuredContent"])
+        row = payload["rows"][0]
+        assert row["amount"] == 1234.56 and isinstance(row["amount"], float)
+        assert row["tr_date"] == "2026-07-28"
+        assert row["created_at"] == "2026-07-28T09:30:00"
+        assert row["missing"] is None
+
+    async def test_query_failure_path(self):
+        response = await self._call(
+            {"query": "SELECT * FROM no_such_table"},
+            {"success": False, "message": "relation does not exist", "row_count": 0, "columns": []},
+        )
+        payload = self._validate(response["structuredContent"])
+        assert payload["success"] is False
+        assert payload["error"] == "relation does not exist"
+        assert payload["rows"] == []
+
+    async def test_missing_query_argument_path(self):
+        response = await self._call({})
+        payload = self._validate(response["structuredContent"])
+        assert payload["success"] is False
+        assert payload["error"]
+
+    async def test_security_blocked_path(self):
+        """被 SQLValidator 擋下的呼叫同樣是一條 return 路徑，同樣會被客戶端驗證。"""
+        response = await self._call({"query": "DROP TABLE users"})
+        payload = self._validate(response["structuredContent"])
+        assert payload["success"] is False
+        assert "Security validation failed" in payload["error"]
+
+    async def test_tools_without_output_schema_send_no_structured_content(self):
+        """未宣告 schema 的工具不該憑空多出 structuredContent。
+
+        多送一個沒有 schema 約束的欄位，等於在契約外傳資料 —— 呼叫端無從驗證，
+        而它一旦被依賴，之後改動就成了無聲的破壞性變更。
+        """
+        registry = ToolRegistry()
+        db = MagicMock()
+        db.get_cache_stats = MagicMock(return_value={"success": True, "entries": 0})
+
+        name = make_tool_name(TOOL_CACHE_STATS)
+        response = await registry.handle_tool(_fake_request(name, {}), db)
+        assert "structuredContent" not in response, name
 
 
 class TestRegistryRouting:
@@ -363,6 +621,34 @@ class TestProtocolWiring:
         assert isinstance(hints["tools/list"], CacheHint)
         assert hints["tools/list"].ttl_ms > 0
 
+    async def test_on_call_tool_forwards_structured_content(self, mcp_server):
+        """SEP-2106：協議層必須把 handler 的 structuredContent 轉發到 CallToolResult。
+
+        這是第 1 層抓不到的接縫：handler 可以完全正確地產生 payload，而協議層忘記轉發，
+        結果線路上沒有 structuredContent —— 客戶端因此對每一次呼叫都拋錯。
+        """
+        import mcp_types as types
+        from jsonschema.validators import validator_for
+
+        name = make_tool_name(TOOL_QUERY)
+        mcp_server.db_manager.execute_query_async = AsyncMock(return_value={
+            "success": True, "row_count": 1, "columns": ["x"], "results": [{"x": 1}],
+        })
+        params = types.CallToolRequestParams(name=name, arguments={"query": "SELECT 1"})
+
+        result = await mcp_server._on_call_tool(None, params)
+
+        assert result.structured_content is not None, "structuredContent 未被轉發到協議層"
+        schema = _output_schema(next(t for t in get_all_tools() if t.name == name))
+        validator_for(schema)(schema).validate(result.structured_content)
+
+    async def test_on_call_tool_omits_structured_content_when_not_declared(self, mcp_server):
+        import mcp_types as types
+
+        params = types.CallToolRequestParams(name=make_tool_name(TOOL_CACHE_STATS), arguments={})
+        result = await mcp_server._on_call_tool(None, params)
+        assert result.structured_content is None
+
     async def test_on_call_tool_converts_handler_exception(self, mcp_server):
         """v2 起未捕捉的例外會變成 JSON-RPC error；確認仍轉為可讀的 is_error 結果。"""
         import mcp_types as types
@@ -422,6 +708,10 @@ class TestTwoEraCompatibility:
             server = MCPHTTPServer()
             db = MagicMock()
             db.get_cache_stats = MagicMock(return_value={"success": True, "entries": 0})
+            # 讓 `*_query` 在線路層可被呼叫（structuredContent 只有 query 工具會產出）。
+            db.execute_query_async = AsyncMock(return_value={
+                "success": True, "row_count": 1, "columns": ["x"], "results": [{"x": 1}],
+            })
             server.db_manager = db
             server.initialize = AsyncMock(return_value=None)
 
@@ -591,6 +881,54 @@ class TestTwoEraCompatibility:
         )
         assert called.status_code == 200, called.text
         assert called.json()["result"]["content"], "handshake 世代 tools/call 未回傳 content"
+
+    def test_both_eras_carry_structured_content_on_the_wire(self, client):
+        """SEP-2106：兩個世代的 `tools/call` 回應都必須帶 `structuredContent`（線路層）。
+
+        線路層驗證是必要的：`outputSchema` 與 `structuredContent` 的 Python 屬性名是
+        snake_case，序列化才變 camelCase。只在 Python 物件上斷言，等於沒驗到客戶端
+        真正會讀到的東西 —— 而客戶端讀不到就會拋 RuntimeError。
+        """
+        from jsonschema.validators import validator_for
+
+        name = make_tool_name(TOOL_QUERY)
+        args = {"query": "SELECT 1"}
+
+        modern = client.post(
+            "/mcp/",
+            json=self._modern_body("tools/call", {"name": name, "arguments": args}),
+            headers=self._modern_headers("tools/call", name),
+        )
+        assert modern.status_code == 200, modern.text
+
+        init = self._handshake_init(client)
+        assert init.status_code == 200
+        headers = {"Accept": _ACCEPT, "Content-Type": "application/json"}
+        sid = init.headers.get("mcp-session-id")
+        if sid:
+            headers["mcp-session-id"] = sid
+        handshake = client.post(
+            "/mcp/",
+            json={
+                "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": name, "arguments": args},
+            },
+            headers=headers,
+        )
+        assert handshake.status_code == 200, handshake.text
+
+        # 公告的 schema 也要在線路上是 camelCase 的 outputSchema
+        listed = client.post(
+            "/mcp/", json=self._modern_body("tools/list"),
+            headers=self._modern_headers("tools/list"),
+        ).json()["result"]["tools"]
+        schema = next(t for t in listed if t["name"] == name).get("outputSchema")
+        assert schema is not None, "線路上的 tools/list 沒有 outputSchema"
+
+        for era, response in (("modern", modern), ("handshake", handshake)):
+            result = response.json()["result"]
+            assert "structuredContent" in result, f"{era} 世代回應缺 structuredContent"
+            validator_for(schema)(schema).validate(result["structuredContent"])
 
     # --- 跨世代一致性（本 class 最重要的斷言）-------------------------------
 
