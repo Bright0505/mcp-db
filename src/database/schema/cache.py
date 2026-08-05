@@ -2,12 +2,15 @@
 
 import json
 import logging
-import os
 from typing import Any, Dict, List, Optional
 from pathlib import Path
 from datetime import datetime, timedelta
 from threading import RLock
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# DB_* must be read through env(), not os.getenv: a module with ENV_PREFIX set
+# has its own namespace and would otherwise pick up the shared deployment value.
+from core.config import env
 
 logger = logging.getLogger(__name__)
 
@@ -438,7 +441,7 @@ class SchemaPreloader:
             # Use flat structure to match database query format (introspector.py:263-276)
             summary_result = {
                 'success': True,
-                'database_type': os.environ.get('DB_TYPE', 'mssql').lower(),
+                'database_type': env('DB_TYPE', 'mssql').lower(),
                 'tables': summary['total_tables'],
                 'views': 0,  # JSON config doesn't track views
                 'procedures': 0,  # JSON config doesn't track procedures
