@@ -62,6 +62,11 @@ def setup_middleware(app: FastAPI, app_config: AppConfig):
             "MCP-Protocol-Version",
             "Mcp-Session-Id",
         ],
+        # CORS_PREFLIGHT_MAX_AGE was read into HTTPConfig but never applied: its only
+        # consumer was the hand-written CORS handling in the removed sse_server.py,
+        # which was itself dead code -- so the setting had never taken effect on a live
+        # path. It went unnoticed because its default (600) happens to equal Starlette's.
+        max_age=_http_config.cors_preflight_max_age,
     )
 
     # GZip compression

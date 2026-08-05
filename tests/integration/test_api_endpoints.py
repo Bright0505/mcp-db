@@ -539,6 +539,38 @@ class TestCORSHeaders:
 
         assert response.status_code in [200, 204]
 
+    def test_cors_preflight_max_age_is_wired_to_config(self, test_client):
+        """✅ `CORS_PREFLIGHT_MAX_AGE` 必須真的傳給 CORSMiddleware
+
+        `CORS_PREFLIGHT_MAX_AGE` 曾被讀進 `HTTPConfig` 卻無任何使用點 ——
+        唯一的消費者是已移除的 `sse_server.py`（本身是死碼），所以該設定在
+        live 路徑上從未生效。
+
+        **它沒被發現的原因是預設值 600 恰好等於 Starlette 的預設值**，
+        因此不能只斷言回應 header 的值：沒接上時回應照樣是 600，測試會假通過
+        （已實測會假通過）。而改用 monkeypatch 環境變數 + `importlib.reload`
+        的做法會替換 `core.config` 的 class 物件，污染同一輪的其他測試
+        （實測導致 `test_async_manager.py` 7 個轉紅）。
+
+        所以改為直接檢查 middleware 堆疊裡 `CORSMiddleware` 的實際 kwargs ——
+        沒傳 `max_age=` 時該 key 根本不存在，一定會被抓到，且無副作用。
+        """
+        from starlette.middleware.cors import CORSMiddleware
+        from core.config import HTTPConfig
+
+        app = test_client.app
+        cors = [m for m in app.user_middleware if m.cls is CORSMiddleware]
+        assert cors, "middleware 堆疊裡找不到 CORSMiddleware"
+
+        kwargs = cors[0].kwargs
+        assert "max_age" in kwargs, (
+            "CORSMiddleware 未收到 max_age → CORS_PREFLIGHT_MAX_AGE 是死設定"
+        )
+        assert kwargs["max_age"] == HTTPConfig.from_env().cors_preflight_max_age, (
+            f"max_age={kwargs['max_age']} 與 HTTPConfig 的 "
+            f"{HTTPConfig.from_env().cors_preflight_max_age} 不一致"
+        )
+
     def test_cors_allows_origin(self, test_client):
         """✅ CORS 允許來源"""
         response = test_client.get(
