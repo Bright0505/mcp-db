@@ -163,6 +163,25 @@ class TestSQLValidator:
         assert is_valid is False
         assert "comments not allowed" in error
 
+    def test_leading_comment_reports_comment_rule_not_statement_type(self):
+        """❌ 開頭註釋要回報「註釋」而非「不是 SELECT」
+
+        回歸測試：註釋檢查必須排在首字檢查之前。否則開頭是註釋時
+        query_upper.split()[0] 會變成註釋 token，讓一個合法的 SELECT
+        被回報成 "Only SELECT, WITH statements are allowed" ——
+        呼叫端（含 LLM）看到這個訊息無法自我修正，因為它的語句確實是 SELECT。
+        """
+        for query in (
+            "-- leading comment\nSELECT COUNT(*) FROM users",   # `--` 後有空格
+            "--leading comment\nSELECT COUNT(*) FROM users",    # `--` 後無空格
+            "/* leading block */ SELECT COUNT(*) FROM users",
+        ):
+            is_valid, error = SQLValidator.validate_query(query)
+            assert is_valid is False, f"應被拒絕：{query!r}"
+            assert "comments not allowed" in error, (
+                f"訊息應指出註釋規則，實際為 {error!r}（查詢：{query!r}）"
+            )
+
     def test_reject_xp_extended_procedures(self):
         """❌ 拒絕 xp_ 擴展存儲過程"""
         query = "SELECT * FROM users; EXEC xp_cmdshell 'dir'"
