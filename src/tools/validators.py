@@ -36,17 +36,27 @@ class SQLValidator:
         query_stripped = query.strip()
         query_upper = query_stripped.upper()
 
-        # Check if statement type is allowed
-        first_keyword = query_upper.split()[0] if query_upper.split() else ""
-        if first_keyword not in cls.ALLOWED_STATEMENTS:
-            allowed = ', '.join(cls.ALLOWED_STATEMENTS)
-            return False, f"Only {allowed} statements are allowed"
-
         # Remove string literal contents before scanning for dangerous constructs,
         # so values like WHERE status = 'update' or names containing ';' / '--'
         # do not trigger false positives. Doubled quotes ('') inside a literal
         # are part of the same literal per the SQL standard.
         scannable = re.sub(r"'(?:[^']|'')*'", "''", query_upper)
+
+        # Block SQL comments that could be used to bypass validation.
+        # Deliberately checked BEFORE the statement-type check below: when a query
+        # opens with a comment, query_upper.split()[0] is the comment token, so the
+        # statement-type check would reject a valid SELECT with "Only SELECT, WITH
+        # statements are allowed" -- a message the caller cannot act on, because its
+        # statement really is a SELECT. Both orders reject the query; only the
+        # message differs, and this one names the rule that actually applies.
+        if '--' in scannable or '/*' in scannable:
+            return False, "SQL comments not allowed"
+
+        # Check if statement type is allowed
+        first_keyword = query_upper.split()[0] if query_upper.split() else ""
+        if first_keyword not in cls.ALLOWED_STATEMENTS:
+            allowed = ', '.join(cls.ALLOWED_STATEMENTS)
+            return False, f"Only {allowed} statements are allowed"
 
         # Check for dangerous keywords using word boundaries
         for keyword in cls.DANGEROUS_KEYWORDS:
@@ -59,10 +69,6 @@ class SQLValidator:
         # Allow trailing semicolon but not in the middle
         if ';' in scannable[:-1]:
             return False, "Multiple statements not allowed"
-
-        # Block SQL comments that could be used to bypass validation
-        if '--' in scannable or '/*' in scannable:
-            return False, "SQL comments not allowed"
 
         # Block xp_ extended stored procedures (SQL Server specific attack vector)
         # Use word boundary to avoid false positives with REGEXP_MATCH, REGEXP_REPLACE etc.
