@@ -45,15 +45,22 @@ RUN if [ "$ENABLE_LEGACY_TLS" = "true" ]; then \
 ENV OPENSSL_CONF=/etc/ssl/openssl-mcp.cnf
 
 # Install Microsoft ODBC Driver 18 for SQL Server
+#
+# No fallback on failure: the application code requires the exact driver name
+# `ODBC Driver 18 for SQL Server` (see config.py's detect_mssql_driver()). A
+# previous version of this step swallowed any failure in this chain (GPG key
+# fetch, apt-get update, the install itself) into a FreeTDS fallback that
+# doesn't provide that driver name and so produces an image that can never
+# actually connect -- while `docker build` still reported success. The
+# assertion below makes a broken install fail the build loudly instead.
 RUN mkdir -p /usr/share/keyrings \
     && curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg \
     && chmod 644 /usr/share/keyrings/microsoft-prod.gpg \
     && echo "deb [arch=amd64,arm64,armhf signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/debian/11/prod bullseye main" > /etc/apt/sources.list.d/mssql-release.list \
     && apt-get update \
-    && ACCEPT_EULA=Y apt-get install -y msodbcsql18 || \
-    (echo "ODBC driver installation failed, using alternative approach" && \
-    apt-get install -y freetds-dev && \
-    echo "Using FreeTDS as ODBC alternative") \
+    && ACCEPT_EULA=Y apt-get install -y msodbcsql18 \
+    && odbcinst -q -d | grep -q "ODBC Driver 18 for SQL Server" \
+        || (echo "FATAL: ODBC Driver 18 for SQL Server not registered after install" >&2 && exit 1) \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy dependency files and source code
