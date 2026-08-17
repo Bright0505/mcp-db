@@ -106,7 +106,7 @@ docker exec {module}-http python -m pytest /app/tests -q --cov=src --cov-report=
 
 第 3 層是不可省的：前兩層都在 handler 契約層驗證、不經過 HTTP，因此抓不到
 「transport 換掉之後某個世代不通」這類問題 —— 而目前的部署正好依賴兩個世代並存
-（MCPO 走 handshake 世代）。
+（Open WebUI 的原生 MCP 連線走 handshake 世代）。
 
 第 3 層涵蓋的細節包含：
 
@@ -209,7 +209,7 @@ dev = [
   兩者的 handler 邏輯是複製關係而非共用，因此 stdio 側改動不會被測試攔住
 - Schema 格式化器（`database/schema/formatter.py`）
 - 資料庫內省（`database/schema/introspector.py`）—— 需要真實資料庫
-- **端到端**：Open WebUI → LiteLLM → MCPO → 模組的完整路徑無自動化測試
+- **端到端**：Open WebUI → LiteLLM →（原生 MCP 連線）→ 模組的完整路徑無自動化測試
 
 ## 🎯 測試最佳實踐
 
