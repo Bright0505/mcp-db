@@ -334,7 +334,7 @@ class ToolHandler(ABC):
 | 模式 | 指令 | 對外提供 | 用途 |
 |------|------|---------|------|
 | STDIO | `python -m server` | MCP over stdio | Claude Desktop / Claude Code |
-| HTTP | `python -m http_server` | `/mcp`（Streamable HTTP）+ `/api/v1/*`（REST）| Open WebUI / MCPO / 第三方 |
+| HTTP | `python -m http_server` | `/mcp`（Streamable HTTP）+ `/api/v1/*`（REST）| Open WebUI（原生 MCP 連線）／第三方 |
 
 **沒有獨立的協議層套件。** 原先的 `src/protocol/`（`base_server.py` /
 `stdio_server.py` / `sse_server.py`）與 `src/main.py` 已於 2026-08-04 移除 ——
@@ -390,7 +390,7 @@ class MCPHTTPServer:
 
 | 世代 | 特徵 | 目前誰在用 |
 |------|------|-----------|
-| handshake 世代（≤ 2025-11-25） | 先 `initialize` 再送請求 | MCPO |
+| handshake 世代（≤ 2025-11-25） | 先 `initialize` 再送請求 | Open WebUI 原生 MCP 連線 |
 | 2026-07-28 世代 | 無 handshake，self-contained POST；必須帶 `Mcp-Method`（呼叫工具時另帶 `Mcp-Name`）與 `params._meta` 信封 | 尚無生產客戶端 |
 
 世代判別由 SDK 的 `StreamableHTTPSessionManager` 處理，模組不自行協商版本。
@@ -444,7 +444,7 @@ def setup_middleware(app: FastAPI, app_config: AppConfig):
 CORS 的 `allow_headers` 必須放行 MCP 2026-07-28（SEP-2243）要求的
 `Mcp-Method`、`Mcp-Name`、`MCP-Protocol-Version`、`Mcp-Session-Id` ——
 否則瀏覽器端 MCP 客戶端的 preflight 會被擋（實測回 400）。
-經 MCPO 進來的是 server-to-server 請求，不受此影響。
+Open WebUI 是 server-to-server 請求，不受此影響。
 
 ---
 
