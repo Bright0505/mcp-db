@@ -18,3 +18,5 @@ class HealthResponse(BaseModel):
     timestamp: str
     version: str
     database_connected: bool
+    # False when MCP_AUTH_TOKEN is unset -- lets a deploy confirm the token took effect
+    auth_enabled: bool = False
