@@ -239,7 +239,8 @@ class MCPHTTPServer:
                 status="healthy" if db_connected else "degraded",
                 timestamp=datetime.now().isoformat(),
                 version="1.2.0",
-                database_connected=db_connected
+                database_connected=db_connected,
+                auth_enabled=getattr(self.app.state, "auth_enabled", False),
             )
 
         @self.app.get("/api/v1/tools")

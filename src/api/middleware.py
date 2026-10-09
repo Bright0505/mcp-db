@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from core.config import HTTPConfig, AppConfig
+from api.auth import BearerTokenMiddleware, load_auth_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +19,9 @@ _http_config = HTTPConfig.from_env()
 limiter = Limiter(key_func=get_remote_address, default_limits=[_http_config.rate_limit_default])
 
 GZIP_MIN_SIZE = 1000
+
+# CI's wait_for_health polls this path without credentials
+AUTH_EXEMPT_PATHS = ("/api/v1/health",)
 
 
 def setup_rate_limiting(app: FastAPI):
@@ -29,8 +33,19 @@ def setup_rate_limiting(app: FastAPI):
 def setup_middleware(app: FastAPI, app_config: AppConfig):
     """Configure all middleware for FastAPI application.
 
-    Sets up CORS, GZip compression, and rate limiting.
+    Sets up shared-token authentication, CORS, GZip compression, and rate limiting.
     """
+    # Shared-token auth. Added first so it sits inside CORS (Starlette wraps later
+    # middleware around earlier ones): browser preflights are answered by CORS before
+    # they could be refused here.
+    tokens = load_auth_tokens()
+    app.state.auth_enabled = bool(tokens)
+    if tokens:
+        app.add_middleware(BearerTokenMiddleware, tokens=tokens, exempt_paths=AUTH_EXEMPT_PATHS)
+        logger.info(f"Shared-token auth enabled ({len(tokens)} token(s) accepted)")
+    else:
+        logger.warning("Shared-token auth disabled: MCP_AUTH_TOKEN is not set")
+
     # CORS
     cors_env = os.getenv("CORS_ALLOWED_ORIGINS", "")
     if cors_env:
