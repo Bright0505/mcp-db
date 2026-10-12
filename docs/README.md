@@ -2,6 +2,12 @@
 
 歡迎使用 MCP Multi-Database Connector 技術文件。
 
+> 本目錄文件由樣板（`mcp-db`）維護，各衍生模組沿用同一份。文中 `{module}`、`{prefix}` 為佔位符：
+> `{module}` ＝ 模組名（容器名 `mcp-{module}-dev`、`mcp-{module}-http-dev`），`{prefix}` ＝ 工具前綴（`TOOL_PREFIX`）。
+> 範例中的 `mcp-db` 若出現在 Claude Desktop 設定的 key／路徑，請換成你的模組名。
+> 現況（REST 在 `/api/v1/`、MCP 在 Streamable HTTP `/mcp/`、
+> 部署＝模組 repo 推 `vX.Y.Z` tag）以各模組 README 為準。
+
 ## 文件導覽
 
 ### 入門指南
@@ -26,7 +32,6 @@
 |------|------|----------|
 | [Claude Code 開發環境](CLAUDE.md) | Claude Code hooks 與自動化設定 | 專案貢獻者 |
 | [測試指南](testing.md) | 單元測試與覆蓋率 | 開發者 |
-| [開發歷史文件](development/) | v4.2 架構重構文件 | 理解專案演進 |
 
 ## 按使用場景查找
 

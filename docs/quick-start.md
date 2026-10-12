@@ -18,8 +18,8 @@ MCP Multi-Database Connector 提供雙模式架構，請根據需求選擇：
 ### 步驟 1: 安裝
 ```bash
 # 克隆專案
-git clone https://github.com/brightsu/mcp-db
-cd mcp-db
+git clone <此模組的 repo 網址>
+cd mcp-{module}
 
 # 安裝依賴
 pip install -e .
@@ -68,8 +68,8 @@ pip install -e .
 ### 步驟 1: 安裝
 ```bash
 # 克隆專案
-git clone https://github.com/brightsu/mcp-db
-cd mcp-db
+git clone <此模組的 repo 網址>
+cd mcp-{module}
 
 # 安裝依賴
 pip install -e .
@@ -85,7 +85,7 @@ cp .env.example .env
 python -m http_server
 
 # 或使用命令腳本
-mcp-db-http
+mcp-{module}-http
 ```
 
 ### 步驟 3: 測試 API
