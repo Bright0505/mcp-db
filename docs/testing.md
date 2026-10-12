@@ -124,19 +124,19 @@ docker exec {module}-http python -m pytest /app/tests -q --cov=src --cov-report=
 
 ```bash
 # 執行全部測試（單元 + 整合，含協議層）
-docker exec mcp-db-http-dev pytest /app/tests -q
+docker exec mcp-{module}-http-dev pytest /app/tests -q
 
 # 只跑單元測試
-docker exec mcp-db-http-dev pytest /app/tests/unit/ -v
+docker exec mcp-{module}-http-dev pytest /app/tests/unit/ -v
 
 # 只跑協議層測試（改動 transport 或 SDK 版本後必跑）
-docker exec mcp-db-http-dev pytest /app/tests/integration/test_mcp_protocol.py -v
+docker exec mcp-{module}-http-dev pytest /app/tests/integration/test_mcp_protocol.py -v
 
 # 執行特定測試文件
-docker exec mcp-db-http-dev pytest /app/tests/unit/test_validators.py -v
+docker exec mcp-{module}-http-dev pytest /app/tests/unit/test_validators.py -v
 
 # 執行帶覆蓋率報告的測試
-docker exec mcp-db-http-dev pytest /app/tests \
+docker exec mcp-{module}-http-dev pytest /app/tests \
   --cov=/app/src \
   --cov-report=term \
   --cov-report=html
@@ -303,7 +303,7 @@ asyncio_mode = "auto"
 **解決方案**:
 ```bash
 # 在容器中執行測試
-docker exec mcp-db-http-dev pytest /app/tests/unit/ -v
+docker exec mcp-{module}-http-dev pytest /app/tests/unit/ -v
 
 # 或設置 PYTHONPATH
 export PYTHONPATH=/app/src

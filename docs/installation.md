@@ -5,13 +5,13 @@
 ## 📋 系統需求
 
 ### 最低需求
-- **Python**: 3.8 或更高版本
+- **Python**: 3.11 或更高版本（`pyproject.toml` 的 `requires-python`，Docker image 為 `python:3.11-slim`）
 - **記憶體**: 1GB RAM
 - **硬碟**: 500MB 可用空間
 - **網路**: 可存取資料庫伺服器
 
 ### 建議需求
-- **Python**: 3.10 或更高版本
+- **Python**: 3.11 或更高版本
 - **記憶體**: 2GB RAM 或更多
 - **硬碟**: 2GB 可用空間
 - **CPU**: 2 核心或更多
@@ -38,7 +38,7 @@
 ### 步驟 1: 檢查 Python 版本
 ```bash
 python --version
-# 應該顯示 Python 3.8.0 或更高版本
+# 應該顯示 Python 3.11 或更高版本
 
 # 如果您的系統同時有 Python 2 和 3
 python3 --version
@@ -60,8 +60,8 @@ source mcp-db-env/bin/activate
 ### 步驟 3: 克隆專案
 ```bash
 # 使用 git 克隆
-git clone https://github.com/brightsu/mcp-db.git
-cd mcp-db
+git clone <此模組的 repo 網址>
+cd mcp-{module}
 
 # 或下載 ZIP 檔案
 # 從 GitHub 下載並解壓到本地目錄
@@ -104,8 +104,8 @@ docker-compose --version
 
 ### 步驟 1: 下載專案
 ```bash
-git clone https://github.com/brightsu/mcp-db.git
-cd mcp-db
+git clone <此模組的 repo 網址>
+cd mcp-{module}
 ```
 
 ### 步驟 2: 配置環境變數
@@ -141,13 +141,13 @@ docker-compose logs -f
 ### 步驟 5: 驗證安裝
 ```bash
 # 檢查容器狀態
-docker ps | grep mcp-db
+docker ps | grep mcp-{module}
 
 # 測試 HTTP API
 curl http://localhost:8000/docs
 
 # 測試 MCP 服務器
-docker exec -it mcp-db-dev python -m server --help
+docker exec -it mcp-{module}-dev python -m server --help
 ```
 
 ---
@@ -168,8 +168,8 @@ docker exec -it mcp-db-dev python -m server --help
 ### 步驟 2: 克隆並設定開發環境
 ```bash
 # 克隆專案
-git clone https://github.com/brightsu/mcp-db.git
-cd mcp-db
+git clone <此模組的 repo 網址>
+cd mcp-{module}
 
 # 創建開發環境
 python -m venv venv

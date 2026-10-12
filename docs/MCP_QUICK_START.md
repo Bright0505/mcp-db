@@ -40,8 +40,8 @@ This project implements a full MCP server with **10+ database tools**, enabling 
 
 ```bash
 # 克隆專案
-git clone https://github.com/yourusername/mcp-db.git
-cd mcp-db
+git clone <此模組的 repo 網址>
+cd mcp-{module}
 
 # 配置環境變數
 cp .env.example .env
@@ -67,7 +67,7 @@ pip install -e .
     "mcp-db": {
       "command": "python",
       "args": ["-m", "server"],
-      "cwd": "/path/to/mcp-db",
+      "cwd": "/path/to/mcp-{module}",
       "env": {
         "DB_TYPE": "mssql",
         "DB_HOST": "localhost",
@@ -108,7 +108,7 @@ cp .env.example .env
 # 編輯 .env
 
 # 啟動容器
-docker-compose up -d mcp-db
+docker-compose up -d mcp-{module}
 ```
 
 #### 步驟 2: 配置 Claude Desktop (Docker 模式)
@@ -119,7 +119,7 @@ docker-compose up -d mcp-db
     "mcp-db": {
       "command": "docker",
       "args": [
-        "exec", "-i", "mcp-db-dev",
+        "exec", "-i", "mcp-{module}-dev",
         "python", "-m", "server"
       ]
     }
@@ -131,10 +131,10 @@ docker-compose up -d mcp-db
 
 ```bash
 # 檢查容器狀態
-docker ps | grep mcp-db
+docker ps | grep mcp-{module}
 
 # 查看日誌
-docker logs mcp-db-dev --tail 20
+docker logs mcp-{module}-dev --tail 20
 ```
 
 ---
@@ -145,7 +145,7 @@ docker logs mcp-db-dev --tail 20
 
 ```bash
 # Docker 模式
-docker-compose up -d mcp-db-http
+docker-compose up -d mcp-{module}-http
 
 # 本地模式
 python -m http_server
@@ -160,17 +160,15 @@ python -m http_server
 
 ```bash
 # 測試連線
-curl -X POST http://localhost:8000/api/test-connection
+curl http://localhost:8000/api/v1/connection/test
 
 # 執行查詢
-curl -X POST http://localhost:8000/api/query \
+curl -X POST http://localhost:8000/api/v1/query \
   -H "Content-Type: application/json" \
-  -d '{"query": "SELECT TOP 10 * FROM users"}'
+  -d '{"query": "SELECT COUNT(*) AS n FROM users"}'
 
 # 查看 Schema
-curl -X POST http://localhost:8000/api/schema \
-  -H "Content-Type: application/json" \
-  -d '{"table_name": "users"}'
+curl http://localhost:8000/api/v1/schema/users
 ```
 
 ---
@@ -338,7 +336,7 @@ ALTER ROLE db_datareader ADD MEMBER claude_readonly;
 cat claude_desktop_config.json | python -m json.tool
 
 # 測試 MCP 伺服器
-cd /path/to/mcp-db
+cd /path/to/mcp-{module}
 python -m server
 ```
 
@@ -373,17 +371,17 @@ print(db.test_connection())
 **檢查項目**:
 ```bash
 # 查看容器狀態
-docker ps -a | grep mcp-db
+docker ps -a | grep mcp-{module}
 
 # 查看容器日誌
-docker logs mcp-db-dev
+docker logs mcp-{module}-dev
 
 # 重啟容器
-docker-compose restart mcp-db
+docker-compose restart mcp-{module}
 
 # 重新建置
-docker-compose build mcp-db
-docker-compose up -d mcp-db
+docker-compose build mcp-{module}
+docker-compose up -d mcp-{module}
 ```
 
 ---

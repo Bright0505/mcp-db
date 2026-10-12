@@ -266,11 +266,11 @@ for f in schemas_config/*.json schemas_config/tables/*.json; do
   python -m json.tool "$f" > /dev/null && echo "OK: $f"
 done
 
-# 2. 重新啟動服務
-docker-compose restart mcp-db-http
+# 2. 重新載入設定（本機開發：重啟容器；正式機的 schemas_config 已打包進 image，要打新 tag）
+docker-compose restart mcp-{module}-http
 
 # 3. 測試 Schema 載入
-curl http://localhost:8000/api/schema/ORDERS
+curl http://localhost:8000/api/v1/schema/ORDERS
 ```
 
 ---
@@ -357,10 +357,10 @@ SCHEMA_CACHE_TTL_MINUTES=60
 python -m json.tool schemas_config/tables/YOUR_TABLE.json
 
 # 2. 重新啟動服務
-docker-compose restart mcp-db-http
+docker-compose restart mcp-{module}-http
 
 # 3. 清除快取
-curl -X POST http://localhost:8000/api/cache/clear
+curl -X POST http://localhost:8000/api/v1/cache/invalidate
 ```
 
 ### 問題二：AI 產生不正確的 SQL

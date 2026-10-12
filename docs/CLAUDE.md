@@ -1,5 +1,8 @@
 # Claude Code 開發環境與自動化設定
 
+> 容器名以 `docker-compose.yml` 的 `container_name` 為準：樣板是 `mcp-db-dev`／`mcp-db-http-dev`，衍生模組是
+> `mcp-{module}-dev`／`mcp-{module}-http-dev`（下文以 `{module}` 代稱）。本檔只談**本機開發**；正式機部署是推 `vX.Y.Z` tag。
+
 ## 🐳 **重要提醒：開發模式統一使用 Docker 容器**
 
 **⚠️ 關鍵提醒：本專案在開發模式下統一使用 Docker 容器進行測試和開發**
@@ -20,26 +23,26 @@
 ```bash
 docker ps
 # 應該看到運行中的容器：
-# - mcp-db-dev (MCP 伺服器, stdio 模式)
-# - mcp-db-http-dev (HTTP API, port 8000)
+# - mcp-{module}-dev (MCP 伺服器, stdio 模式)
+# - mcp-{module}-http-dev (HTTP API, port 8000)
 ```
 
 #### 重啟服務載入程式碼變更
 ```bash
 # 重啟 HTTP API 服務
-docker-compose restart mcp-db-http
+docker-compose restart mcp-{module}-http
 
 # 重啟 MCP 伺服器
-docker-compose restart mcp-db
+docker-compose restart mcp-{module}
 ```
 
 #### 查看服務狀態與日誌
 ```bash
 # 查看 HTTP API 日誌
-docker logs mcp-db-http-dev --tail 10
+docker logs mcp-{module}-http-dev --tail 10
 
 # 查看 MCP 伺服器日誌
-docker logs mcp-db-dev --tail 10
+docker logs mcp-{module}-dev --tail 10
 ```
 
 ### 服務端點

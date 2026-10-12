@@ -218,7 +218,7 @@ class SchemaCache:
     def set(key: str, value: Any, ttl: Optional[int] = None)
     def invalidate(pattern: str = None) -> int
 
-    # 預載追蹤 (v4.2 新增)
+    # 預載追蹤
     def mark_static_preload_complete(table_names: List[str])
     def mark_dynamic_preload_complete(table_names: List[str])
     def get_preload_status() -> Dict[str, Any]
@@ -232,7 +232,7 @@ class SchemaCache:
 - ⏱️ TTL (Time To Live) 自動過期
 - 📈 LFU+LRU 混合淘汰策略
 - 📊 快取命中率統計
-- 🔍 預載狀態透明化（v4.2）
+- 🔍 預載狀態透明化
 
 ##### introspector.py - SchemaIntrospector
 **職責**: 資料庫內省（查詢實際結構）
@@ -256,7 +256,7 @@ class StaticSchemaLoader:
 
     def load_schemas_config() -> Dict[str, Any]
     def get_table_schema(table_name: str) -> Optional[Dict]
-    def validate_whitelist(introspector: SchemaIntrospector)  # v4.2 新增
+    def validate_whitelist(introspector: SchemaIntrospector)
 ```
 
 ##### formatter.py
@@ -505,7 +505,7 @@ sequenceDiagram
     Service-->>Client: 返回結果
 ```
 
-### 2. Schema 載入流程（v4.2 改進）
+### 2. Schema 載入流程
 
 ```mermaid
 sequenceDiagram
@@ -518,13 +518,13 @@ sequenceDiagram
 
     App->>Manager: 啟動時預載
     Manager->>StaticLoader: 載入 schemas_config
-    StaticLoader->>Introspector: 驗證白名單（v4.2）
+    StaticLoader->>Introspector: 驗證白名單
     Introspector->>Database: 查詢表格是否存在
     Database-->>Introspector: 返回驗證結果
     StaticLoader->>Cache: 標記靜態預載完成
     Manager->>Introspector: 並行預載動態 Schema
     Introspector->>Cache: 標記動態預載完成
-    Cache-->>App: 預載狀態透明化（v4.2）
+    Cache-->>App: 預載狀態透明化
 ```
 
 ### 3. MCP 工具調用流程
@@ -559,11 +559,11 @@ sequenceDiagram
 
 ## 🚀 效能考量
 
-### 1. 快取策略（v4.2 改進）
+### 1. 快取策略
 - **LFU+LRU 混合淘汰**: 結合訪問頻率和最近使用
 - **TTL 自動過期**: 可配置的過期時間
 - **預載優化**: 啟動時並行預載熱門 Schema
-- **預載追蹤**: 透明的預載狀態查詢（v4.2）
+- **預載追蹤**: 透明的預載狀態查詢
 
 ### 2. 異步架構（階段 1+2 完成）
 - **AsyncDatabaseManager**: 異步查詢執行
@@ -574,7 +574,7 @@ sequenceDiagram
 ### 3. 智能優化
 - **Schema 壓縮**: 60-80% token 節省
 - **Strict Mode**: 僅允許預配置表格，防止意外查詢
-- **來源追蹤**: cache_source 字段標記數據來源（v4.2）
+- **來源追蹤**: cache_source 字段標記數據來源
 
 ---
 
@@ -588,9 +588,9 @@ sequenceDiagram
 
 ### 2. API 安全
 - **輸入驗證**: Pydantic 模型驗證
-- **錯誤處理**: 統一錯誤格式，避免敏感資訊洩露（v4.2）
+- **錯誤處理**: 統一錯誤格式，避免敏感資訊洩露
 - **CORS 配置**: 可配置的跨域存取控制
-- **敏感資訊保護**: `expose_sensitive_info` 控制（v4.2）
+- **敏感資訊保護**: `expose_sensitive_info` 控制
 
 ### 3. 配置安全
 - **環境變數**: 使用 .env 存儲敏感資訊
@@ -648,15 +648,14 @@ new_tool = Tool(
 
 ### 1. 健康檢查
 ```python
-@app.get("/health")
+# GET /api/v1/health（src/http_server.py；不需 token，MCP_AUTH_TOKEN 啟用時唯一的豁免路徑）
 async def health_check():
-    return {
-        "status": "healthy",
-        "database": await db_manager.test_connection(),
-        "cache": cache.get_stats(),
-        "preload_status": cache.get_preload_status(),  # v4.2
-        "timestamp": datetime.now().isoformat()
-    }
+    return HealthResponse(
+        status="healthy" if db_connected else "degraded",
+        timestamp=datetime.now().isoformat(),
+        database_connected=db_connected,
+        auth_enabled=auth_enabled,
+    )
 ```
 
 ### 2. 快取監控
@@ -671,7 +670,7 @@ cache.get_stats()
 # }
 ```
 
-### 3. 預載狀態（v4.2 新增）
+### 3. 預載狀態
 ```python
 cache.get_preload_status()
 # {
@@ -703,8 +702,6 @@ cache.get_preload_status()
 ---
 
 > **相關文件**：
-> - [v4.2 架構重構詳解](development/v4.2-architecture-refactoring.md)
->   — **歷史文件**，描述 2026-01 當時的分層（含已移除的 `protocol/`）
 > - [Schema 系統](schema-system.md) — schemas_config 配置系統
 > - [效能優化](performance.md) — 快取與 Token 優化策略
 > - [測試指南](testing.md) — 單元測試與覆蓋率報告

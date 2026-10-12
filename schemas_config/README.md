@@ -14,7 +14,7 @@ schemas_config/
 ├── ai_enhancement.json       # [必要] AI 查詢增強設定
 ├── examples/                 # 參考範例
 │   └── sample_table.json     # 完整表格配置範例
-└── tables/                   # [選用] 個別表格詳細配置
+└── tables/                   # [選用] 個別表格詳細配置（樣板為空；衍生模組以實際檔案為準）
     └── .gitkeep
 ```
 
@@ -63,7 +63,9 @@ schemas_config/
 - **用途**：定義所有可存取的表格
 - **必要性**：是 — 所有可存取的表格都必須在此註冊
 - **內容**：基本資訊（table_type、display_name）
-- **存取控制**：只有在此定義的表格才能被系統存取
+- **存取控制**：`SCHEMA_STRICT_MODE=true` 時，schema 探索（`{prefix}_schema` 等）只認此處註冊的表格；
+  ⚠️ 白名單**不會**擋 `{prefix}_query` 的實際執行（驗證層只檢查唯讀，不比對 `tables_list.json`），
+  資料庫帳號可讀的表格仍可被 SQL 直接查到，敏感表格請在資料庫帳號權限層處理
 
 #### 第二層：詳細配置層 (tables/*.json)
 - **用途**：為重要表格提供詳細的中繼資料
@@ -82,8 +84,8 @@ schemas_config/
 3. `global_patterns.json`（全域模式）
 
 **嚴格模式行為**：
-- `SCHEMA_STRICT_MODE=true`（預設）：僅允許存取 `tables_list.json` 中的表格
-- `SCHEMA_STRICT_MODE=false`：快取未命中時允許動態資料庫 Schema 查詢
+- `SCHEMA_STRICT_MODE=false`（**預設**，`src/core/config.py`）：快取未命中時允許動態資料庫 Schema 查詢
+- `SCHEMA_STRICT_MODE=true`：schema 探索僅允許 `tables_list.json` 中的表格（只影響探索，不影響 query 執行）
 
 ## 配置檔案參考
 
