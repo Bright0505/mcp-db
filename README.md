@@ -169,6 +169,7 @@ curl http://localhost:8000/api/v1/tools
 ```
 
 若設定了 `MCP_AUTH_TOKEN`，除 `/api/v1/health` 外每個請求（REST 與 `/mcp/`）都要帶 `Authorization: Bearer <token>`。
+另可選用 OAuth（`MCP_OAUTH_ISSUER`／`MCP_OAUTH_AUDIENCE`／`MCP_OAUTH_JWKS_URL` 三者都設才啟用）：`/mcp/` 另接受外部授權伺服器簽發的 JWT，只驗簽章、`iss`、`aud`、`exp`，REST 仍只認共用 token；`/api/v1/health` 的 `oauth_enabled` 顯示是否啟用。說明見 `.env.example`。
 SQL 語法依資料庫而異（例如 SQL Server 用 `TOP`、PostgreSQL 用 `LIMIT`），可呼叫 `{prefix}_syntax_guide` 取得對應提示。
 
 ---
