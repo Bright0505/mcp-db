@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from core.config import HTTPConfig, AppConfig
-from api.auth import BearerTokenMiddleware, load_auth_tokens
+from api.auth import BearerTokenMiddleware, OAuthVerifier, load_auth_tokens, load_oauth_config
 
 logger = logging.getLogger(__name__)
 
@@ -39,12 +39,22 @@ def setup_middleware(app: FastAPI, app_config: AppConfig):
     # middleware around earlier ones): browser preflights are answered by CORS before
     # they could be refused here.
     tokens = load_auth_tokens()
+    oauth_config = load_oauth_config()
     app.state.auth_enabled = bool(tokens)
+    app.state.oauth_enabled = oauth_config is not None
+    if tokens or oauth_config:
+        app.add_middleware(
+            BearerTokenMiddleware,
+            tokens=tokens,
+            exempt_paths=AUTH_EXEMPT_PATHS,
+            oauth=OAuthVerifier(oauth_config) if oauth_config else None,
+        )
     if tokens:
-        app.add_middleware(BearerTokenMiddleware, tokens=tokens, exempt_paths=AUTH_EXEMPT_PATHS)
         logger.info(f"Shared-token auth enabled ({len(tokens)} token(s) accepted)")
     else:
         logger.warning("Shared-token auth disabled: MCP_AUTH_TOKEN is not set")
+    if oauth_config:
+        logger.info(f"OAuth access tokens accepted on /mcp (issuer={oauth_config.issuer}, audience={oauth_config.audience})")
 
     # CORS
     cors_env = os.getenv("CORS_ALLOWED_ORIGINS", "")

@@ -241,6 +241,7 @@ class MCPHTTPServer:
                 version="1.2.0",
                 database_connected=db_connected,
                 auth_enabled=getattr(self.app.state, "auth_enabled", False),
+                oauth_enabled=getattr(self.app.state, "oauth_enabled", False),
             )
 
         @self.app.get("/api/v1/tools")
