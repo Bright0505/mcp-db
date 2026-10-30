@@ -211,6 +211,9 @@ SCHEMA_STRICT_MODE=false
 # token 預期由前面的閘道（nginx）持有並轉發，不是每個 client 各持一把
 MCP_AUTH_TOKEN=
 
+# 唯讀工具宣告 annotations.readOnlyHint（選用、opt-in；client 可能據此免確認，見 .env.example）
+MCP_TOOL_READONLY_HINTS=false
+
 # 速率限制
 RATE_LIMIT_DEFAULT=100/minute
 RATE_LIMIT_QUERY=30/minute
