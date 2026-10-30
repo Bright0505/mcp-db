@@ -2,6 +2,12 @@
 
 本文件記錄 MCP Multi-Database Connector 的所有重要變更。
 
+## 新增 opt-in 唯讀工具宣告（2026-10-30）
+
+- 新環境變數 `MCP_TOOL_READONLY_HINTS`（預設關閉，`tools/list` 與先前完全相同）。開啟時唯讀工具加 `annotations.readOnlyHint=true`；
+  cache_invalidate／schema_reload 會改狀態，不標。
+- 用途：例如 Gemini Enterprise 自訂 MCP 連接器對 `readOnlyHint` 的動作跳過每次呼叫的確認。源自 mcp-sale v1.2.0 試點。
+
 ## 文件更新 - 2026-10-12
 
 - 僅更新文件，未改程式。README／docs 對齊現況：REST 路由為 `/api/v1/...`、Streamable HTTP 端點 `/mcp/`

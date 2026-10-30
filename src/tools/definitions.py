@@ -4,7 +4,7 @@ import json
 import os
 from pathlib import Path
 from typing import List, Optional
-from mcp.types import Tool
+from mcp.types import Tool, ToolAnnotations
 
 
 # SEP-2106: tool schemas are interpreted as JSON Schema 2020-12. Declaring the dialect
@@ -146,6 +146,42 @@ def _stamp_schema_dialect(tools: List[Tool]) -> List[Tool]:
     return tools
 
 
+# Tools that only read: the database (query is gated to SELECT/WITH by SQLValidator) or
+# the module's own metadata. cache_invalidate and schema_reload are deliberately absent --
+# they change state every caller shares.
+READ_ONLY_TOOLS = frozenset({
+    TOOL_QUERY,
+    TOOL_SCHEMA,
+    TOOL_TEST_CONNECTION,
+    TOOL_DEPENDENCIES,
+    TOOL_SCHEMA_SUMMARY,
+    TOOL_CACHE_STATS,
+    TOOL_STATIC_SCHEMA_INFO,
+    TOOL_EXPORT_SCHEMA,
+    TOOL_SYNTAX_GUIDE,
+})
+
+
+def readonly_hints_enabled() -> bool:
+    """MCP_TOOL_READONLY_HINTS opts in to advertising readOnlyHint (off by default).
+
+    Clients may act on the hint without asking the user -- Gemini Enterprise skips its
+    per-call confirmation for read-only actions -- so advertising it is a deployment
+    decision, not something the template turns on for everyone.
+    """
+    return os.getenv("MCP_TOOL_READONLY_HINTS", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _stamp_readonly_hints(tools: List[Tool], prefix: str) -> List[Tool]:
+    """Mark READ_ONLY_TOOLS with annotations.readOnlyHint when the deployment opts in."""
+    if not readonly_hints_enabled():
+        return tools
+    for tool in tools:
+        if tool.name[len(prefix) + 1:] in READ_ONLY_TOOLS:
+            tool.annotations = ToolAnnotations(read_only_hint=True)
+    return tools
+
+
 def get_key_tables_description() -> str:
     """Get key table descriptions from schemas_config/tables_list.json.
 
@@ -190,7 +226,7 @@ def get_all_tools() -> List[Tool]:
     prefix = get_tool_prefix()
     _key_tables_desc = get_key_tables_description()
 
-    return _stamp_schema_dialect([
+    return _stamp_readonly_hints(_stamp_schema_dialect([
         Tool(
             name=f"{prefix}_{TOOL_QUERY}",
             description=(
@@ -350,7 +386,7 @@ def get_all_tools() -> List[Tool]:
                 "required": []
             }
         )
-    ])
+    ]), prefix)
 
 
 DB_TOOLS = get_all_tools()

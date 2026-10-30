@@ -49,9 +49,12 @@ from mcp_types.version import HANDSHAKE_PROTOCOL_VERSIONS
 from tools import get_all_tools
 from tools.definitions import (
     JSON_SCHEMA_DIALECT,
+    READ_ONLY_TOOLS,
+    TOOL_CACHE_INVALIDATE,
     TOOL_CACHE_STATS,
     TOOL_QUERY,
     TOOL_SCHEMA,
+    TOOL_SCHEMA_RELOAD,
     get_tool_prefix,
     make_tool_name,
 )
@@ -224,6 +227,47 @@ class TestInputSchema:
         """
         for tool in get_all_tools():
             assert _schema(tool).get("$schema") == JSON_SCHEMA_DIALECT, tool.name
+
+
+class TestReadOnlyHints:
+    """`MCP_TOOL_READONLY_HINTS` —— opt-in 宣告 `annotations.readOnlyHint`。
+
+    Gemini Enterprise 對 readOnlyHint 的工具跳過每次呼叫的使用者確認，所以預設必須
+    完全不輸出 annotations（與未加此功能前相同），且改狀態的工具在開啟時也不可標唯讀。
+    """
+
+    def _suffix(self, tool):
+        return tool.name[len(get_tool_prefix()) + 1 :]
+
+    def test_off_by_default(self, monkeypatch):
+        monkeypatch.delenv("MCP_TOOL_READONLY_HINTS", raising=False)
+        assert all(t.annotations is None for t in get_all_tools())
+
+    @pytest.mark.parametrize("value", ["", "false", "0", "no"])
+    def test_falsy_values_stay_off(self, monkeypatch, value):
+        monkeypatch.setenv("MCP_TOOL_READONLY_HINTS", value)
+        assert all(t.annotations is None for t in get_all_tools())
+
+    def test_enabled_marks_only_read_only_tools(self, monkeypatch):
+        monkeypatch.setenv("MCP_TOOL_READONLY_HINTS", "true")
+        for tool in get_all_tools():
+            if self._suffix(tool) in READ_ONLY_TOOLS:
+                assert tool.annotations.read_only_hint is True, tool.name
+            else:
+                assert tool.annotations is None, tool.name
+
+    def test_state_changing_tools_never_read_only(self):
+        assert TOOL_CACHE_INVALIDATE not in READ_ONLY_TOOLS
+        assert TOOL_SCHEMA_RELOAD not in READ_ONLY_TOOLS
+
+    def test_classification_covers_known_tools(self):
+        # 新增工具時要決定它是否唯讀；分類表不可含不存在的工具
+        assert READ_ONLY_TOOLS <= EXPECTED_TOOL_SUFFIXES
+
+    def test_wire_format_uses_camel_case(self, monkeypatch):
+        monkeypatch.setenv("MCP_TOOL_READONLY_HINTS", "true")
+        query = next(t for t in get_all_tools() if self._suffix(t) == TOOL_QUERY)
+        assert query.model_dump(by_alias=True, exclude_none=True)["annotations"] == {"readOnlyHint": True}
 
 
 class TestOutputSchema:
